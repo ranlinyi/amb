@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# 构建 adbctl 自包含单文件二进制（Linux x86_64 / Windows x86_64）
+# 构建 amb 自包含单文件二进制（Linux x86_64 / Windows x86_64）
 #
 # 产物：
-#   dist/adbctl-linux-x86_64          内嵌单文件版（Linux）
-#   dist/adbctl-windows-x86_64.exe    内嵌单文件版（Windows）
-#   dist/adbctl-linux-x86_64-lite     省空间部署版（Linux，按需下载依赖）
+#   dist/amb-linux-x86_64          内嵌单文件版（Linux）
+#   dist/amb-windows-x86_64.exe    内嵌单文件版（Windows）
+#   dist/amb-linux-x86_64-lite     省空间部署版（Linux，按需下载依赖）
 #
 # 依赖：go(1.22+)、curl、tar、unzip、sha256sum
 set -euo pipefail
 
-VERSION="1.1.6"
+VERSION="1.2.0"
 SCRCPY_VERSION="4.1"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -78,20 +78,20 @@ done
 rm -rf "$BUILD/linux-raw" "$BUILD/windows-raw"
 
 echo "== 4/5 生成内嵌 payload zip =="
-go run ./tools/mkzip "$BUILD/linux"   "$PAYLOAD/adbctl-payload-linux-amd64.zip"
-go run ./tools/mkzip "$BUILD/windows" "$PAYLOAD/adbctl-payload-windows-amd64.zip"
+go run ./tools/mkzip "$BUILD/linux"   "$PAYLOAD/amb-payload-linux-amd64.zip"
+go run ./tools/mkzip "$BUILD/windows" "$PAYLOAD/amb-payload-windows-amd64.zip"
 
 echo "== 5/5 交叉编译 =="
-CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$DIST/adbctl-linux-x86_64" .
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$DIST/adbctl-windows-x86_64.exe" .
+CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$DIST/amb-linux-x86_64" .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$DIST/amb-windows-x86_64.exe" .
 # 省空间部署版（仅 Linux）：不内嵌依赖，运行时扫描并按需下载到用户缓存
-CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -tags lite -trimpath -ldflags "-s -w" -o "$DIST/adbctl-linux-x86_64-lite" .
+CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -tags lite -trimpath -ldflags "-s -w" -o "$DIST/amb-linux-x86_64-lite" .
 
 echo
 echo "构建完成："
 ls -la "$DIST"
 (
   cd "$DIST"
-  sha256sum adbctl-linux-x86_64 adbctl-windows-x86_64.exe adbctl-linux-x86_64-lite > SHA256SUMS
+  sha256sum amb-linux-x86_64 amb-windows-x86_64.exe amb-linux-x86_64-lite > SHA256SUMS
   cat SHA256SUMS
 )

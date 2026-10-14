@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
-# adbctl — Android 设备一键连接 / 投屏：有 USB 走 USB，没有才走无线调试
+# amb — Android Mirror Bridge（安卓镜像桥）：Android 设备一键连接 / 投屏，
+#        有 USB 走 USB，没有才走无线调试
 #
-#   adbctl               # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址
-#   adbctl -S            # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）
-#   adbctl -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S
-#   adbctl -a 计算器 -S                # 模糊匹配：唯一命中直接用；多个则按匹配度列出序号让你选
-#   adbctl -a +微信 -S                 # 前缀 + = 启动前先强杀该应用；? 前缀=模糊（本脚本默认就是模糊）
-#   adbctl --list-apps                 # 列出设备上全部应用（应用名 + 包名）
-#   adbctl -A            # 纯音频模式：只把手机的声音转到电脑（手机自动静音），音频低延迟/高音质；隐含 -S
-#   adbctl -U            # 强制走 USB；当前没有在位 USB 设备则报错退出
-#   adbctl -W            # 强制走无线（忽略在位的 USB）
-#   adbctl -p 748966     # 无线配对（748966 = 手机上显示的 6 位配对码）；隐含 -W
-#   adbctl -l            # 只列出无线候选地址，不做任何连接（无线专用）
-#   adbctl -w 30         # 最多等 30 秒等 mDNS 广播出现（默认 0 = 只查一次）
-#   adbctl -h            # 帮助
+#   amb               # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址
+#   amb -S            # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）
+#   amb -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S
+#   amb -a 计算器 -S                # 模糊匹配：唯一命中直接用；多个则按匹配度列出序号让你选
+#   amb -a +微信 -S                 # 前缀 + = 启动前先强杀该应用；? 前缀=模糊（本脚本默认就是模糊）
+#   amb --list-apps                 # 列出设备上全部应用（应用名 + 包名）
+#   amb -A            # 纯音频模式：只把手机的声音转到电脑（手机自动静音），音频低延迟/高音质；隐含 -S
+#   amb -U            # 强制走 USB；当前没有在位 USB 设备则报错退出
+#   amb -W            # 强制走无线（忽略在位的 USB）
+#   amb -p 748966     # 无线配对（748966 = 手机上显示的 6 位配对码）；隐含 -W
+#   amb -l            # 只列出无线候选地址，不做任何连接（无线专用）
+#   amb -w 30         # 最多等 30 秒等 mDNS 广播出现（默认 0 = 只查一次）
+#   amb tcpip 5555    # 等价于 adb tcpip 5555：把设备切到固定端口，之后免手动重连
+#   amb -h            # 帮助
+#
+# 多设备选择:
+#   检测到多台可连设备时（插着两台手机、或有多个无线候选），列出全部设备让你指定，
+#   绝不静默挑第一台。只有一台时直接用它；非交互终端拒绝选择并列出候选（退出码 2）。
 #
 # 免手动重连（断网外出场景）:
-#   在能连上的时候执行一次  adb tcpip 5555
-#   之后手机即便离开 Wi-Fi 几小时再回来，adbctl 也能通过 adb 的 _adb._tcp 广播
+#   在能连上的时候执行一次  amb tcpip 5555
+#   之后手机即便离开 Wi-Fi 几小时再回来，amb 也能通过 adb 的 _adb._tcp 广播
 #   自动发现并连上固定端口 5555（无线调试会被系统在断网时关掉，固定端口不会）。
 #
 # 这个脚本会执行什么（副作用全部明列，只有这几条）:
-#   * "$ADB" devices -l                    查询式，只读（判断有没有 USB）
+#   * "$ADB" devices -l                    查询式，只读（枚举 USB 设备）
 #   * "$ADB" mdns services                 查询式，只读（仅无线路径）
 #   * "$ADB" pair <配对地址> <配对码>      仅当给了 -p
-#   * "$ADB" connect <候选地址>            仅无线路径，逐个候选试，成功即停
+#   * "$ADB" connect <选中的地址>          仅无线路径，连用户指定的那一个
+#   * "$ADB" -s <设备> tcpip <端口>        仅当给了 tcpip 子命令
 #   * scrcpy -s <选中的序列号/地址> --list-apps     仅当 --list-apps，或 -a 需要解析应用名时
 #   * scrcpy -s <选中的序列号/地址> [--new-display --start-app=<包名>] <参数档，见下方>
 #                                            仅当给了 -S / -a
@@ -51,10 +58,10 @@
 #      旧 --max-fps=52 与 60Hz 屏不整除，节奏略不均。
 #      缓冲保持 0：实测局域网 RTT 约 10ms / mdev 约 5ms，抖动很小，不需要额外缓冲；
 #      60ms 缓冲的延迟感反而明显，故撤掉，优先跟手。
-#      想回旧档：SCRCPY_ARGS="--video-codec=h265 --video-bit-rate=12M --max-size=1200 --max-fps=52 --video-buffer=0" adbctl -S
+#      想回旧档：SCRCPY_ARGS="--video-codec=h265 --video-bit-rate=12M --max-size=1200 --max-fps=52 --video-buffer=0" amb -S
 #   USB 档（插线时自动启用，2026-09-27 新增）：VBR 上限 50M + 原生 1440x3200 + 60fps + 缓冲 0
 #      依据：USB2.0 实测 adb 吞吐约 106 Mbps（连续流 13.3 MB/s），50M 约留一半余量
-#      想更狠：SCRCPY_ARGS_USB="--video-codec=h265 --video-bit-rate=80M --max-size=3200 --max-fps=60 --video-buffer=0" adbctl -S
+#      想更狠：SCRCPY_ARGS_USB="--video-codec=h265 --video-bit-rate=80M --max-size=3200 --max-fps=60 --video-buffer=0" amb -S
 #      若发烫/掉帧：把 --max-size 降到 2400，或 --video-bit-rate 降到 32M
 #   音频档（-A 纯音频模式）：2026-09-27 新增，同日把编解码改为无损 raw
 #      预设：--no-video --no-control --audio-source=output --audio-codec=raw --audio-buffer=20 --require-audio
@@ -62,7 +69,7 @@
 #      为什么是 raw：实测帧长 opus=20ms/帧、FLAC=85.3ms/帧（FLAC 块=4096 采样），
 #        FLAC 那 85ms 编码块缓冲会明显加延迟；raw 无编码器 → bit-perfect 且零编码延迟，带宽 1.536 Mbps（相对线路可忽略）
 #      buffer 20 是把 scrcpy 默认 50ms 降下来的（若偶有爆音，往上加到 30~50）
-#      想省带宽：SCRCPY_ARGS_AUDIO="--no-video --no-control --audio-source=output --audio-codec=opus --audio-bit-rate=320K --audio-buffer=20 --require-audio" adbctl -A
+#      想省带宽：SCRCPY_ARGS_AUDIO="--no-video --no-control --audio-source=output --audio-codec=opus --audio-bit-rate=320K --audio-buffer=20 --require-audio" amb -A
 #      VBR 内容自适应：静态界面降到零点几 Mbps，动起来才吃带宽，日常最省
 #      音频：scrcpy 默认就转发设备音频（实测 opus 48kHz 立体声），参数里已不再禁用；
 #            不想要声音加 --no-audio；只想转发但不在电脑出声加 --no-audio-playback
@@ -78,7 +85,7 @@
 #   更安静档：上限改 6M（CPU 约 28%，帧率不变）
 #   高画质档（代价大）：加 --video-codec-options=bitrate-mode:int=2 -b 48M --max-fps=60
 #      约 55 fps，但 CPU 约 63%、机器温度 68->74 摄氏度，风扇会明显转
-#   换档：SCRCPY_ARGS="..." adbctl -S
+#   换档：SCRCPY_ARGS="..." amb -S
 
 set -u
 
@@ -87,7 +94,7 @@ PAIR_IP="${PAIR_IP:-pair_ip}"
 WIFI_ADDR="${WIFI_ADDR:-}"
 
 # -S 时传给 scrcpy 的参数。默认档 = 实测调出来的"帧率够用 + 风扇安静"组合。
-# 换档：SCRCPY_ARGS="..." adbctl -S（或用上面注释里的参考档）
+# 换档：SCRCPY_ARGS="..." amb -S（或用上面注释里的参考档）
 SCRCPY_ARGS_DEFAULT="--video-codec=h265 --video-bit-rate=20M --max-size=1600 --max-fps=60 --video-buffer=0"
 # USB 专用高画质档：USB2.0 实测 adb 吞吐约 106 Mbps，故码率取 50M（约留一半余量）；
 # --max-size=3200 对 1440x3200 的源屏等于不缩放（原生分辨率）
@@ -133,6 +140,8 @@ APP=""
 APP_SPEC=""
 APP_STOP=0
 DO_LIST_APPS=0
+SUB_CMD=""
+TCPIP_PORT=""
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
@@ -150,15 +159,16 @@ while [ $# -gt 0 ]; do
     -p|--pair)   PAIR_CODE="${2:-}"; ROUTE=wifi; shift ;;
     -w|--wait)   WAIT="${2:-0}"; shift ;;
     -h|--help)   usage; exit 0 ;;
-    *) echo "adbctl: 未知参数 '$1'（-h 看用法）" >&2; exit 2 ;;
+    tcpip)       SUB_CMD=tcpip; [ -n "${2:-}" ] && [ "${2#-}" = "$2" ] && { TCPIP_PORT="$2"; shift; } ;;
+    *) echo "amb: 未知参数 '$1'（-h 看用法）" >&2; exit 2 ;;
   esac
   shift
 done
 
-case "$WAIT" in ''|*[!0-9]*) echo "adbctl: -w 需要一个秒数" >&2; exit 2 ;; esac
+case "$WAIT" in ''|*[!0-9]*) echo "amb: -w 需要一个秒数" >&2; exit 2 ;; esac
 
 if ! command -v "$ADB" >/dev/null 2>&1 && [ ! -x "$ADB" ]; then
-  echo "adbctl: 找不到 adb（可用 ADB=/path/to/adb 指定）" >&2
+  echo "amb: 找不到 adb（可用 ADB=/path/to/adb 指定）" >&2
   exit 127
 fi
 
@@ -190,15 +200,86 @@ pairing_address() {
   fi
 }
 
-# USB 设备序列号：优先看 adb devices -l 里的 " usb:" 标记；
+# USB 设备序列号列表：优先看 adb devices -l 里的 " usb:" 标记；
 # 退路（极老版本 adb）：非 IP、非 mDNS 别名的本地设备
-usb_serial() {
+# 注意：枚举全部而不取第一台——插着两台手机时必须让用户选，不能静默投错设备。
+usb_serials() {
   local u
-  u=$("$ADB" devices -l 2>/dev/null | awk '/ usb:/ && $2 == "device" { print $1; exit }')
+  u=$("$ADB" devices -l 2>/dev/null | awk '/ usb:/ && $2 == "device" { print $1 }')
   if [ -z "$u" ]; then
-    u=$("$ADB" devices 2>/dev/null | awk '$2 == "device" && $1 !~ /:/ && $1 !~ /_adb-tls-/ { print $1; exit }')
+    u=$("$ADB" devices 2>/dev/null | awk '$2 == "device" && $1 !~ /:/ && $1 !~ /_adb-tls-/ { print $1 }')
   fi
-  printf '%s' "$u"
+  # 没有设备时不输出任何行（包括空行），否则调用方会误判为"有 1 台空设备"
+  [ -n "$u" ] && printf '%s\n' "$u"
+  return 0
+}
+
+# 从 adb devices -l 里取某台 USB 设备的 model/product 作为说明
+usb_label() {
+  local serial="$1" m
+  m=$("$ADB" devices -l 2>/dev/null | awk -v s="$serial" '$1 == s { for (i = 3; i <= NF; i++) if ($i ~ /^model:/) { sub(/^model:/, "", $i); print $i; exit } }')
+  [ -z "$m" ] && m=$("$ADB" devices -l 2>/dev/null | awk -v s="$serial" '$1 == s { for (i = 3; i <= NF; i++) if ($i ~ /^product:/) { sub(/^product:/, "", $i); print $i; exit } }')
+  printf '%s' "$m"
+}
+
+# 从多个候选里让用户选一个。$1 = 候选文件（每行一个）；$2 = 是否带 label（usb=是, 其它=否）
+# stdout 输出选中的那个；退出码 0 成功 / 2 需选择但不可选 / 3 用户取消。
+# 只有一项时直接输出它，不弹选择。
+choose_one() {
+  local list_file="$1" with_label="$2" n=0 line ans serial label
+  local -a items=() labels=()
+  # 过滤空行：usb_serials 在没有设备时会输出一个空行（printf '%s\n' ""），
+  # 若不滤掉会被当成"有 1 台空设备"。
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    items+=("$line")
+    n=$((n + 1))
+  done < <(grep -v '^[[:space:]]*$' "$list_file")
+
+  if [ "$n" -eq 1 ]; then printf '%s' "${items[0]}"; return 0; fi
+  if [ "$n" -eq 0 ]; then return 2; fi
+
+  if [ ! -t 0 ]; then
+    echo "amb: 检测到 $n 台可连设备，但当前不是交互终端，无法选择：" >&2
+    local i=1
+    for line in "${items[@]}"; do
+      if [ "$with_label" = usb ]; then
+        label="$(usb_label "$line")"
+        if [ -n "$label" ]; then printf '         %-24s %s\n' "$line" "$label" >&2
+        else printf '         %s\n' "$line" >&2; fi
+      else
+        printf '         %s\n' "$line" >&2
+      fi
+      i=$((i + 1))
+    done
+    echo "        （无第二合法出口：请在交互终端里重试）" >&2
+    return 2
+  fi
+
+  echo "amb: 检测到 $n 台可连设备，请指定用哪一台：" >&2
+  local i=1
+  for line in "${items[@]}"; do
+    if [ "$with_label" = usb ]; then
+      label="$(usb_label "$line")"
+      if [ -n "$label" ]; then printf '  %2d) %-24s %s\n' "$i" "$line" "$label" >&2
+      else printf '  %2d) %s\n' "$i" "$line" >&2; fi
+    else
+      printf '  %2d) %s\n' "$i" "$line" >&2
+    fi
+    i=$((i + 1))
+  done
+  printf '请输入序号 [1-%d]，q 取消: ' "$n" >&2
+  read -r ans || ans=""
+  case "$ans" in
+    ''|q|Q) echo "amb: 已取消。" >&2; return 3 ;;
+    *[!0-9]*) echo "amb: 序号无效。" >&2; return 2 ;;
+  esac
+  if [ "$ans" -lt 1 ] || [ "$ans" -gt "$n" ]; then
+    echo "amb: 序号超出范围（1-$n）。" >&2
+    return 2
+  fi
+  printf '%s' "${items[$((ans - 1))]}"
+  return 0
 }
 
 # ---------- 应用名解析（模糊匹配） ----------
@@ -258,7 +339,7 @@ resolve_app() {
   fi
 
   # 2) 取「应用名+包名」清单并打分
-  echo "adbctl: 正在获取设备应用清单（约 1~2 秒）…" >&2
+  echo "amb: 正在获取设备应用清单（约 1~2 秒）…" >&2
   all=$(apps_with_labels "$target" | score_apps "$q_lc")
   if [ -z "$all" ]; then
     return 1
@@ -274,11 +355,11 @@ resolve_app() {
   # 3) 多个并列最高分：列出全部匹配，按匹配度排序，让用户选序号
   total=$(printf '%s\n' "$all" | wc -l)
   if [ ! -t 0 ]; then
-    echo "adbctl: 匹配到 $total 个应用，但当前不是交互终端，无法选择。请改用完整包名：" >&2
+    echo "amb: 匹配到 $total 个应用，但当前不是交互终端，无法选择。请改用完整包名：" >&2
     printf '%s\n' "$all" | head -30 | awk -F'\t' '{ printf "         %-36s %s\n", $3, $2 }' >&2
     return 2
   fi
-  echo "adbctl: 匹配到 $total 个应用（按匹配度排序）:" >&2
+  echo "amb: 匹配到 $total 个应用（按匹配度排序）:" >&2
   printf '%s\n' "$all" | awk -F'\t' '{ printf "  %2d) %-36s %s\n", NR, $3, $2 }' | head -30 >&2
   shown=$total
   [ "$shown" -gt 30 ] && shown=30
@@ -288,11 +369,11 @@ resolve_app() {
   printf '请输入序号 [1-%d]，q 取消: ' "$shown" >&2
   read -r ans || ans=""
   case "$ans" in
-    ''|q|Q) echo "adbctl: 已取消。" >&2; return 3 ;;
-    *[!0-9]*) echo "adbctl: 序号无效。" >&2; return 2 ;;
+    ''|q|Q) echo "amb: 已取消。" >&2; return 3 ;;
+    *[!0-9]*) echo "amb: 序号无效。" >&2; return 2 ;;
   esac
   if [ "$ans" -lt 1 ] || [ "$ans" -gt "$total" ]; then
-    echo "adbctl: 序号超出范围（1-$total）。" >&2
+    echo "amb: 序号超出范围（1-$total）。" >&2
     return 2
   fi
   printf '%s' "$(printf '%s\n' "$all" | sed -n "${ans}p" | cut -f2)"
@@ -309,18 +390,18 @@ launch_or_exit() {
     parse_app_spec "$APP"
     spec="$APP_SPEC"
     if [ -z "$spec" ]; then
-      echo "adbctl: -a 需要应用名或包名（-h 看用法）" >&2
+      echo "amb: -a 需要应用名或包名（-h 看用法）" >&2
       exit 2
     fi
     pkg="$(resolve_app "$target" "$spec")"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 1 ]; then
-        echo "adbctl: 没有匹配到应用「$spec」。用 adbctl --list-apps 查看全部应用。" >&2
+        echo "amb: 没有匹配到应用「$spec」。用 amb --list-apps 查看全部应用。" >&2
       fi
       exit "$rc"
     fi
-    echo "adbctl: 应用已解析 -> $pkg" >&2
+    echo "amb: 应用已解析 -> $pkg" >&2
     # 若用户在 SCRCPY_ARGS 里自己指定了 --new-display（可带尺寸），尊重用户的，不重复加
     case " $args " in
       *" --new-display"*) : ;;
@@ -331,31 +412,79 @@ launch_or_exit() {
     else
       appargs="$appargs --start-app=$pkg"
     fi
-    echo "adbctl: 单应用模式：虚拟显示 + 启动 $pkg（手机主屏不受影响）" >&2
+    echo "amb: 单应用模式：虚拟显示 + 启动 $pkg（手机主屏不受影响）" >&2
   fi
   if [ "$DO_SCRCPY" = 1 ]; then
-    echo "adbctl: 启动 scrcpy -s $target $appargs $args" >&2
+    echo "amb: 启动 scrcpy -s $target $appargs $args" >&2
     # shellcheck disable=SC2086
     exec scrcpy -s "$target" $appargs $args
   fi
   exit 0
 }
 
+# ---------------- tcpip 子命令 ----------------
+# 等价于 adb tcpip <端口>，但先选设备（多台时不静默挑第一台）。
+# 放在 USB 路径之前：tcpip 自己按 ROUTE 决定查 USB 还是查无线，
+# 且打错端口号时不该先白跑一次设备枚举。
+if [ "$SUB_CMD" = tcpip ]; then
+  port="${TCPIP_PORT:-5555}"
+  case "$port" in ''|*[!0-9]*) echo "amb: tcpip 需要一个端口号，如 amb tcpip 5555（收到 '$TCPIP_PORT'）" >&2; exit 2 ;; esac
+
+  list="$(mktemp)"; trap 'rm -f "${list:-}" "${usb_list:-}"' EXIT
+  if [ "$ROUTE" != wifi ]; then
+    usb_serials > "$list"
+  fi
+  if [ ! -s "$list" ]; then
+    # 没有 USB 设备（或 -W）：从无线候选里挑
+    deadline=$(( $(date +%s) + WAIT ))
+    while :; do
+      connect_candidates > "$list"
+      [ -s "$list" ] && break
+      if [ "$(date +%s)" -lt "$deadline" ]; then sleep 1; continue; fi
+      break
+    done
+    if [ ! -s "$list" ]; then
+      echo "amb: tcpip 需要一台设备，但没有找到 USB 设备，也没发现无线候选。" >&2
+      echo "         请用 USB 连接手机并开启『USB 调试』，或用 -w N 等无线广播出现。" >&2
+      exit 1
+    fi
+  fi
+
+  target="$(choose_one "$list" "$([ "$ROUTE" != wifi ] && echo usb || echo wifi)")"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+  echo "amb: 对 $target 执行 adb tcpip $port …" >&2
+  if out="$("$ADB" -s "$target" tcpip "$port" 2>&1)"; then
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+    echo "amb: 已切到固定端口 $port。" >&2
+    echo "       现在可以拔线；之后手机离开 Wi-Fi 再回来，amb 也能自动发现并连上。" >&2
+    printf '%s\n' "$target"
+    exit 0
+  fi
+  printf '%s\n' "$out" >&2
+  echo "amb: 切换失败：检查 1) 设备已连接且已授权  2) 端口在 1-65535 之间" >&2
+  exit 1
+fi
+
 # ---------------- USB 路径 ----------------
 if [ "$ROUTE" != wifi ]; then
-  usb="$(usb_serial)"
-  if [ -n "$usb" ]; then
-    echo "adbctl: 检测到 USB 设备，走有线：$usb" >&2
+  usb_list="$(mktemp)"; trap 'rm -f "$usb_list"' EXIT
+  usb_serials > "$usb_list"
+  if [ -s "$usb_list" ]; then
+    usb="$(choose_one "$usb_list" usb)"; rc=$?
+    if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+    echo "amb: 检测到 USB 设备，走有线：$usb" >&2
     printf '%s\n' "$usb"
     TRANSPORT=usb
     launch_or_exit "$usb"
   fi
   if [ "$ROUTE" = usb ]; then
-    echo "adbctl: -U 指定走 USB，但当前没有在位的 USB 设备。" >&2
+    echo "amb: -U 指定走 USB，但当前没有在位的 USB 设备。" >&2
     echo "         检查：1) 数据线已插好  2) 手机的『USB 调试』已授权本机" >&2
     exit 1
   fi
-  echo "adbctl: 没有 USB 设备，回落到无线调试。" >&2
+  echo "amb: 没有 USB 设备，回落到无线调试。" >&2
 fi
 
 # ---------------- 无线路径 ----------------
@@ -364,7 +493,7 @@ while :; do
   cands="$(connect_candidates)"
   [ -n "$cands" ] && break
   if [ "$(date +%s)" -lt "$deadline" ]; then sleep 1; continue; fi
-  echo "adbctl: 没有发现任何设备广播（$CONN_SVC / $LEGACY_SVC）。检查：" >&2
+  echo "amb: 没有发现任何设备广播（$CONN_SVC / $LEGACY_SVC）。检查：" >&2
   echo "         4. 免手动重连方案：先在能连上时执行一次 adb tcpip 5555" >&2
   echo "         1. 手机【无线调试】已开启（Android 11+）" >&2
   echo "         2. 与电脑同一网段，路由器没开 AP 隔离 / 访客网络隔离" >&2
@@ -381,42 +510,46 @@ fi
 if [ -n "$PAIR_CODE" ]; then
   paddr="$(pairing_address)"
   if [ -z "$paddr" ]; then
-    echo "adbctl: 没找到配对服务。请在手机上打开『使用配对码配对设备』对话框后重试（-w N 可等待）。" >&2
+    echo "amb: 没找到配对服务。请在手机上打开『使用配对码配对设备』对话框后重试（-w N 可等待）。" >&2
     exit 1
   fi
-  echo "adbctl: 配对 $paddr …" >&2
+  echo "amb: 配对 $paddr …" >&2
   # adb pair 自己会往 stdout 打印 "Successfully paired to ..."，必须转进 stderr，
   # 否则会污染本脚本"stdout 只放选中目标"这条约定
   if pair_out="$("$ADB" pair "$paddr" "$PAIR_CODE" 2>&1)"; then
     printf '%s\n' "$pair_out" >&2
   else
     printf '%s\n' "$pair_out" >&2
-    echo "adbctl: 配对失败：核对 6 位配对码，并确认配对对话框仍开着。" >&2
+    echo "amb: 配对失败：核对 6 位配对码，并确认配对对话框仍开着。" >&2
     exit 1
   fi
   sleep 1
   cands="$(connect_candidates)"
   if [ -z "$cands" ]; then
-    echo "adbctl: 配对成功，但没看到连接服务，请稍后重试连接。" >&2
+    echo "amb: 配对成功，但没看到连接服务，请稍后重试连接。" >&2
     exit 1
   fi
 fi
 
-# 逐个候选试，成功即停
+# 多个候选时先让用户指定，绝不静默连第一个（插着多台设备时尤其重要）。
+# 只有一台候选时直接连，不弹选择。
+cand_list="$(mktemp)"
+printf '%s\n' "$cands" > "$cand_list"
+target="$(choose_one "$cand_list" wifi)"; rc=$?
+if [ "$rc" -ne 0 ]; then rm -f "$cand_list"; exit "$rc"; fi
+rm -f "$cand_list"
+[ -n "$(printf '%s\n' "$cands" | grep -c .)" ] && [ "$(printf '%s\n' "$cands" | grep -c .)" -gt 1 ] && \
+  echo "amb: 已指定 $target，开始连接…" >&2
+
+out="$("$ADB" connect "$target" 2>&1)"
 ok=""
-while IFS= read -r a; do
-  [ -n "$a" ] || continue
-  out="$("$ADB" connect "$a" 2>&1)"
-  case "$out" in
-    *"connected to"*) printf '%s\n' "$a"; ok="$a"; break ;;
-    *) echo "adbctl: $a 不可用（$(printf '%s' "$out" | head -1)）" >&2 ;;
-  esac
-done <<CANDIDATES
-$cands
-CANDIDATES
+case "$out" in
+  *"connected to"*) printf '%s\n' "$target"; ok="$target" ;;
+  *) echo "amb: $target 不可用（$(printf '%s' "$out" | head -1)）" >&2 ;;
+esac
 
 if [ -z "$ok" ]; then
-  echo "adbctl: 所有候选地址都连不上。" >&2
+  echo "amb: 所有候选地址都连不上。" >&2
   echo "         如果刚开关过无线调试，等几秒再试；必要时在手机上重新配对。" >&2
   exit 1
 fi

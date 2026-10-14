@@ -1,4 +1,5 @@
-// adbctl — Android 设备一键连接 / 投屏：有 USB 走 USB，没有才走无线调试。
+// amb — Android Mirror Bridge（安卓镜像桥）：Android 设备一键连接 / 投屏，
+// 有 USB 走 USB，没有才走无线调试。
 //
 // 有两种构建：
 //  1. 内嵌单文件版（默认）：把 adb、scrcpy、scrcpy-server 全部内嵌进可执行文件，
@@ -24,7 +25,7 @@ import (
 	"time"
 )
 
-const appVersion = "1.1.6"
+const appVersion = "1.2.0"
 
 const scrcpyArgsDefault = "--video-codec=h265 --video-bit-rate=20M --max-size=1600 --max-fps=60 --video-buffer=0"
 
@@ -48,35 +49,40 @@ const (
 var ipPortRe = regexp.MustCompile("([0-9]{1,3}\\.){3}[0-9]{1,3}:[0-9]{1,5}")
 
 var usageText = strings.Join([]string{
-	"adbctl — Android 设备一键连接 / 投屏（内嵌单文件版 / 省空间部署版）",
+	"amb — Android Mirror Bridge（安卓镜像桥）",
 	"",
-	"  adbctl               # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址",
-	"  adbctl -S            # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）",
-	"  adbctl -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S",
-	"  adbctl -a 计算器 -S                # 模糊匹配：唯一命中直接用；多个则按匹配度列出序号让你选",
-	"  adbctl -a +微信 -S                 # 前缀 + = 启动前先强杀该应用；? 前缀=模糊（本程序默认就是模糊）",
-	"  adbctl --list-apps                 # 列出设备上全部应用（应用名 + 包名）",
-	"  adbctl -A            # 纯音频模式：只把手机声音转到电脑（手机自动静音）；隐含 -S",
-	"  adbctl -U            # 强制走 USB；当前没有在位 USB 设备则报错退出",
-	"  adbctl -W            # 强制走无线（忽略在位的 USB）",
-	"  adbctl -p 748966     # 无线配对（748966 = 手机上显示的 6 位配对码）；隐含 -W",
-	"  adbctl -l            # 只列出无线候选地址，不做任何连接（无线专用）",
-	"  adbctl -w 30         # 最多等 30 秒等 mDNS 广播出现（默认 0 = 只查一次）",
-	"  adbctl -h            # 帮助",
+	"  Android 设备一键连接 / 投屏：有 USB 走 USB，没有才走无线调试。",
+	"  多台设备可连时，会列出设备让你指定，绝不静默选第一台。",
+	"",
+	"  amb                 # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址",
+	"  amb -S              # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）",
+	"  amb -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S",
+	"  amb -a 计算器 -S                # 模糊匹配：唯一命中直接用；多个则按匹配度列出序号让你选",
+	"  amb -a +微信 -S                 # 前缀 + = 启动前先强杀该应用；? 前缀=模糊（本程序默认就是模糊）",
+	"  amb --list-apps                 # 列出设备上全部应用（应用名 + 包名）",
+	"  amb -A            # 纯音频模式：只把手机声音转到电脑（手机自动静音）；隐含 -S",
+	"  amb -U            # 强制走 USB；当前没有在位 USB 设备则报错退出",
+	"  amb -W            # 强制走无线（忽略在位的 USB）",
+	"  amb -p 748966     # 无线配对（748966 = 手机上显示的 6 位配对码）；隐含 -W",
+	"  amb -l            # 只列出无线候选地址，不做任何连接（无线专用）",
+	"  amb -w 30         # 最多等 30 秒等 mDNS 广播出现（默认 0 = 只查一次）",
+	"  amb tcpip 5555    # 等价于 adb tcpip 5555：把设备切到固定端口，之后免手动重连",
+	"  amb -h            # 帮助",
 	"",
 	"免手动重连（断网外出场景）:",
-	"  在能连上的时候执行一次  adb tcpip 5555；之后手机离开 Wi-Fi 几小时再回来，",
-	"  adbctl 也能通过 adb 的 _adb._tcp 广播自动发现并连上固定端口 5555",
+	"  在能连上的时候执行一次  amb tcpip 5555；之后手机离开 Wi-Fi 几小时再回来，",
+	"  amb 也能通过 adb 的 _adb._tcp 广播自动发现并连上固定端口 5555",
 	"  （无线调试会在断网时被系统关掉，固定端口不会）。",
-	"  adbctl --version     # 版本",
-	"  adbctl --print-paths # 打印最终使用的 adb / scrcpy / server 路径",
-	"  adbctl --check-deps  # 扫描依赖是否存在（省空间版；只扫描不下载，别名 --scan）",
+	"  amb --version     # 版本",
+	"  amb --print-paths # 打印最终使用的 adb / scrcpy / server 路径",
+	"  amb --check-deps  # 扫描依赖是否存在（省空间版；只扫描不下载，别名 --scan）",
 	"",
 	"这个程序会执行什么（副作用全部明列，只有这几条）:",
-	"  * adb devices -l                    查询式，只读（判断有没有 USB）",
+	"  * adb devices -l                    查询式，只读（判断有没有 USB、枚举多台设备）",
 	"  * adb mdns services                 查询式，只读（仅无线路径）",
 	"  * adb pair <配对地址> <配对码>      仅当给了 -p",
 	"  * adb connect <候选地址>            仅无线路径，逐个候选试，成功即停",
+	"  * adb -s <设备> tcpip <端口>        仅当给了 tcpip 子命令",
 	"  * adb shell -n pm list packages     仅 -a 的精确包名快速通道，只读",
 	"  * scrcpy -s <目标> --list-apps      仅当 --list-apps，或 -a 需要解析应用名时",
 	"  * scrcpy -s <目标> [--new-display --start-app=<包名>] $SCRCPY_ARGS",
@@ -90,6 +96,11 @@ var usageText = strings.Join([]string{
 	"  默认（无参数）-> 有 USB 设备就用 USB；没有才回落到无线",
 	"  USB 判定依据：adb devices -l 中 state=device 且带 \" usb:\" 标记的那一行",
 	"",
+	"多设备选择:",
+	"  USB 路径检测到多台在位设备时，列出全部设备让你选序号；",
+	"  无线路径有多个候选地址时，同样列出让你选（q 取消）。",
+	"  只有一台时直接用它，不弹选择。非交互终端拒绝选择，提示用 -s 指定（见下）。",
+	"",
 	"环境变量:",
 	"  ADB                    指定 adb（默认用内嵌/系统的 adb）",
 	"  SCRCPY                 指定 scrcpy（默认用内嵌/系统的 scrcpy）",
@@ -98,9 +109,9 @@ var usageText = strings.Join([]string{
 	"  SCRCPY_ARGS            覆盖 -S 时的 scrcpy 启动参数（优先级最高）",
 	"  SCRCPY_ARGS_USB        只覆盖 USB（插线）时的参数（默认见下）",
 	"  SCRCPY_ARGS_AUDIO      只覆盖 -A 纯音频模式时的参数",
-	"  ADBCTL_CACHE           依赖释放 / 部署目录（默认用户缓存目录）",
-	"  ADBCTL_SCRCPY_URL      省空间版：scrcpy 包下载地址（可换镜像/本地文件）",
-	"  ADBCTL_SCRCPY_SUMS_URL 省空间版：SHA256 清单地址",
+	"  AMB_CACHE              依赖释放 / 部署目录（默认用户缓存目录；旧名 ADBCTL_CACHE 仍兼容）",
+	"  AMB_SCRCPY_URL         省空间版：scrcpy 包下载地址（可换镜像/本地文件；旧名 ADBCTL_SCRCPY_URL 仍兼容）",
+	"  AMB_SCRCPY_SUMS_URL    省空间版：SHA256 清单地址（旧名 ADBCTL_SCRCPY_SUMS_URL 仍兼容）",
 	"",
 	"scrcpy 参数档（2026-09-27 调整）:",
 	"  无线：" + scrcpyArgsDefault,
@@ -152,9 +163,30 @@ func run() int {
 	pairCode := ""
 	waitSec := 0
 	app := ""
+	subCmd := "" // 子命令：tcpip
+	subArg := "" // 子命令的参数：tcpip 的端口
 
 	args := os.Args[1:]
+	// 第一个不以 "-" 开头的参数视为子命令（目前只有 tcpip）。
+	// 这样 amb tcpip 5555 与 amb -W tcpip 5555 都能工作。
 	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			subCmd = args[i]
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				subArg = args[i+1]
+			}
+			break
+		}
+	}
+
+	for i := 0; i < len(args); i++ {
+		// 跳过子命令及其参数（已在上面解析）
+		if subCmd != "" && args[i] == subCmd {
+			if subArg != "" && i+1 < len(args) && args[i+1] == subArg {
+				i++
+			}
+			continue
+		}
 		switch args[i] {
 		case "-S", "--scrcpy":
 			doScrcpy = true
@@ -181,7 +213,7 @@ func run() int {
 			w := takeValue(args, &i)
 			n, err := strconv.Atoi(w)
 			if err != nil || n < 0 {
-				fmt.Fprintln(os.Stderr, "adbctl: -w 需要一个秒数")
+				fmt.Fprintln(os.Stderr, "amb: -w 需要一个秒数")
 				return 2
 			}
 			waitSec = n
@@ -189,11 +221,11 @@ func run() int {
 			fmt.Print(usageText)
 			return 0
 		case "--version":
-			fmt.Printf("adbctl %s\n", appVersion)
+			fmt.Printf("amb %s\n", appVersion)
 			return 0
 		case "--print-paths":
 			if err := setup(); err != nil {
-				fmt.Fprintf(os.Stderr, "adbctl: %v\n", err)
+				fmt.Fprintf(os.Stderr, "amb: %v\n", err)
 				return 1
 			}
 			fmt.Printf("adb=%s\nscrcpy=%s\nserver=%s\nroot=%s\n", adbPath, scrcpyPath, serverPath, payloadRoot)
@@ -201,7 +233,7 @@ func run() int {
 		case "--check-deps", "--scan":
 			if len(embeddedPayload) > 0 {
 				if err := setup(); err != nil {
-					fmt.Fprintf(os.Stderr, "adbctl: %v\n", err)
+					fmt.Fprintf(os.Stderr, "amb: %v\n", err)
 					return 1
 				}
 				fmt.Println("模式：内嵌单文件版（依赖已内嵌，无需扫描/下载）")
@@ -225,34 +257,52 @@ func run() int {
 			}
 			return 0
 		default:
-			fmt.Fprintf(os.Stderr, "adbctl: 未知参数 '%s'（-h 看用法）\n", args[i])
+			fmt.Fprintf(os.Stderr, "amb: 未知参数 '%s'（-h 看用法）\n", args[i])
 			return 2
 		}
 	}
 
 	if err := setup(); err != nil {
-		fmt.Fprintf(os.Stderr, "adbctl: %v\n", err)
+		fmt.Fprintf(os.Stderr, "amb: %v\n", err)
 		return 127
 	}
 	if err := checkExecutable(adbPath); err != nil {
-		fmt.Fprintln(os.Stderr, "adbctl: 找不到 adb（可用 ADB=/path/to/adb 指定）")
+		fmt.Fprintln(os.Stderr, "amb: 找不到 adb（可用 ADB=/path/to/adb 指定）")
 		return 127
+	}
+
+	// ---------- tcpip 子命令 ----------
+	// 等价于 adb tcpip <端口>，但先帮你选设备（多台时不静默挑第一台）。
+	// 放在 USB 路径之前：tcpip 自己会按 route 决定查 USB 还是查无线，
+	// 且打错端口号时不该先白跑一次设备枚举。
+	if subCmd == "tcpip" {
+		return cmdTcpip(subArg, route, waitSec)
 	}
 
 	// ---------- USB 路径 ----------
 	if route != "wifi" {
-		usb := usbSerial()
-		if usb != "" {
-			fmt.Fprintf(os.Stderr, "adbctl: 检测到 USB 设备，走有线：%s\n", usb)
+		usbDevs := usbDevices()
+		if len(usbDevs) > 0 {
+			serials := make([]string, len(usbDevs))
+			labels := make([]string, len(usbDevs))
+			for i, d := range usbDevs {
+				serials[i] = d.serial
+				labels[i] = d.label
+			}
+			usb, code := chooseOne(serials, labels)
+			if code != 0 {
+				return code
+			}
+			fmt.Fprintf(os.Stderr, "amb: 检测到 USB 设备，走有线：%s\n", usb)
 			fmt.Println(usb)
 			return launchOrExit(usb, "usb", audioOnly, doScrcpy, doListApps, app)
 		}
 		if route == "usb" {
-			fmt.Fprintln(os.Stderr, "adbctl: -U 指定走 USB，但当前没有在位的 USB 设备。")
+			fmt.Fprintln(os.Stderr, "amb: -U 指定走 USB，但当前没有在位的 USB 设备。")
 			fmt.Fprintln(os.Stderr, "         检查：1) 数据线已插好  2) 手机的『USB 调试』已授权本机")
 			return 1
 		}
-		fmt.Fprintln(os.Stderr, "adbctl: 没有 USB 设备，回落到无线调试。")
+		fmt.Fprintln(os.Stderr, "amb: 没有 USB 设备，回落到无线调试。")
 	}
 
 	// ---------- 无线路径 ----------
@@ -267,8 +317,8 @@ func run() int {
 			time.Sleep(time.Second)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: 没有发现任何设备广播（%s / %s）。检查：\n", connSvc, legacySvc)
-		fmt.Fprintln(os.Stderr, "         4. 免手动重连：先在能连上时执行一次 adb tcpip 5555")
+		fmt.Fprintf(os.Stderr, "amb: 没有发现任何设备广播（%s / %s）。检查：\n", connSvc, legacySvc)
+		fmt.Fprintln(os.Stderr, "         4. 免手动重连：先在能连上时执行一次 amb tcpip 5555")
 		fmt.Fprintln(os.Stderr, "         1. 手机【无线调试】已开启（Android 11+）")
 		fmt.Fprintln(os.Stderr, "         2. 与电脑同一网段，路由器没开 AP 隔离 / 访客网络隔离")
 		fmt.Fprintln(os.Stderr, "         3. 电脑上别跑 avahi-daemon（会和 adb 抢 5353）")
@@ -285,40 +335,48 @@ func run() int {
 	if pairCode != "" {
 		paddr := pairingAddress()
 		if paddr == "" {
-			fmt.Fprintln(os.Stderr, "adbctl: 没找到配对服务。请在手机上打开『使用配对码配对设备』对话框后重试（-w N 可等待）。")
+			fmt.Fprintln(os.Stderr, "amb: 没找到配对服务。请在手机上打开『使用配对码配对设备』对话框后重试（-w N 可等待）。")
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: 配对 %s …\n", paddr)
+		fmt.Fprintf(os.Stderr, "amb: 配对 %s …\n", paddr)
 		out, err := adbCaptureAll("pair", paddr, pairCode)
 		fmt.Fprint(os.Stderr, out)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "adbctl: 配对失败：核对 6 位配对码，并确认配对对话框仍开着。")
+			fmt.Fprintln(os.Stderr, "amb: 配对失败：核对 6 位配对码，并确认配对对话框仍开着。")
 			return 1
 		}
 		time.Sleep(time.Second)
 		cands = connectCandidates()
 		if len(cands) == 0 {
-			fmt.Fprintln(os.Stderr, "adbctl: 配对成功，但没看到连接服务，请稍后重试连接。")
+			fmt.Fprintln(os.Stderr, "amb: 配对成功，但没看到连接服务，请稍后重试连接。")
 			return 1
 		}
 	}
 
+	// 多个候选时先让用户指定，绝不静默连第一个（插着多台设备时尤其重要）。
+	// 只有一台候选时直接连，不弹选择。
+	target, code := chooseOne(cands, nil)
+	if code != 0 {
+		return code
+	}
+	if len(cands) > 1 {
+		fmt.Fprintf(os.Stderr, "amb: 已指定 %s，开始连接…\n", target)
+	}
+
 	ok := ""
-	for _, a := range cands {
-		out, _ := adbCaptureAll("connect", a)
-		if strings.Contains(out, "connected to") {
-			fmt.Println(a)
-			ok = a
-			break
-		}
+	out, _ := adbCaptureAll("connect", target)
+	if strings.Contains(out, "connected to") {
+		fmt.Println(target)
+		ok = target
+	} else {
 		first := out
 		if idx := strings.IndexByte(out, '\n'); idx >= 0 {
 			first = out[:idx]
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: %s 不可用（%s）\n", a, strings.TrimSpace(first))
+		fmt.Fprintf(os.Stderr, "amb: %s 不可用（%s）\n", target, strings.TrimSpace(first))
 	}
 	if ok == "" {
-		fmt.Fprintln(os.Stderr, "adbctl: 所有候选地址都连不上。")
+		fmt.Fprintln(os.Stderr, "amb: 所有候选地址都连不上。")
 		fmt.Fprintln(os.Stderr, "         如果刚开关过无线调试，等几秒再试；必要时在手机上重新配对。")
 		return 1
 	}
@@ -370,6 +428,10 @@ func exeName(base string) string {
 }
 
 func cacheHome() string {
+	// AMB_CACHE 优先；旧名 ADBCTL_CACHE 仍兼容（老用户/老脚本不用改）
+	if v := os.Getenv("AMB_CACHE"); v != "" {
+		return v
+	}
 	if v := os.Getenv("ADBCTL_CACHE"); v != "" {
 		return v
 	}
@@ -377,7 +439,7 @@ func cacheHome() string {
 	if err != nil || base == "" {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "adbctl", appVersion)
+	return filepath.Join(base, "amb", appVersion)
 }
 
 func ensurePayload() (string, error) {
@@ -389,7 +451,7 @@ func ensurePayload() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", fmt.Errorf("无法创建缓存目录: %w", err)
 	}
-	tmp, err := os.MkdirTemp(filepath.Dir(dir), "adbctl-extract-")
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "amb-extract-")
 	if err != nil {
 		return "", fmt.Errorf("无法创建临时目录: %w", err)
 	}
@@ -555,7 +617,7 @@ func runAttached(path string, args []string) int {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "adbctl: 无法启动 %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "amb: 无法启动 %s: %v\n", path, err)
 		return 1
 	}
 	sigCh := make(chan os.Signal, 1)
@@ -578,7 +640,7 @@ func runAttached(path string, args []string) int {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: %s 运行失败: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "amb: %s 运行失败: %v\n", path, err)
 		return 1
 	}
 	return 0
@@ -667,25 +729,56 @@ func pairingAddress() string {
 	return ""
 }
 
-func usbSerial() string {
+// usbDevices 返回所有在位的 USB 设备（序列号 + model 说明）。
+// 与旧的 usbSerial() 的区别：不再"取第一台就返回"，而是枚举全部，
+// 让上层在多台时弹选择——避免插着两台手机却默默投错那一台。
+func usbDevices() []deviceInfo {
+	var devs []deviceInfo
 	out, _ := adbCaptureOut("devices", "-l")
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[1] == "device" && strings.Contains(line, " usb:") {
-			return fields[0]
+			devs = append(devs, deviceInfo{serial: fields[0], label: modelFromLine(fields)})
 		}
 	}
+	if len(devs) > 0 {
+		return devs
+	}
+	// 退路（极老版本 adb 没有 " usb:" 标记）：非 IP、非 mDNS 别名的本地设备
 	out, _ = adbCaptureOut("devices")
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[1] == "device" &&
 			!strings.Contains(fields[0], ":") && !strings.Contains(fields[0], "_adb-tls-") {
-			return fields[0]
+			devs = append(devs, deviceInfo{serial: fields[0]})
 		}
 	}
-	return ""
+	return devs
+}
+
+// modelFromLine 从 adb devices -l 的一行里取 model:xxx / product:xxx 作为说明。
+func modelFromLine(fields []string) string {
+	model, product := "", ""
+	for _, f := range fields[2:] {
+		switch {
+		case strings.HasPrefix(f, "model:"):
+			model = strings.TrimPrefix(f, "model:")
+		case strings.HasPrefix(f, "product:") && product == "":
+			product = strings.TrimPrefix(f, "product:")
+		}
+	}
+	if model != "" {
+		return model
+	}
+	return product
+}
+
+// deviceInfo 一台设备：serial 是 adb -s 的目标，label 是给人看的说明。
+type deviceInfo struct {
+	serial string
+	label  string
 }
 
 // ---------------- 应用解析 ----------------
@@ -792,7 +885,7 @@ func resolveApp(target, q string) (string, int) {
 		}
 	}
 
-	fmt.Fprintln(os.Stderr, "adbctl: 正在获取设备应用清单（约 1~2 秒）…")
+	fmt.Fprintln(os.Stderr, "amb: 正在获取设备应用清单（约 1~2 秒）…")
 	all := scoreApps(qLC, appsWithLabels(target))
 	if len(all) == 0 {
 		return "", 1
@@ -815,13 +908,13 @@ func resolveApp(target, q string) (string, int) {
 		shown = 30
 	}
 	if !stdinIsTerminal() {
-		fmt.Fprintf(os.Stderr, "adbctl: 匹配到 %d 个应用，但当前不是交互终端，无法选择。请改用完整包名：\n", total)
+		fmt.Fprintf(os.Stderr, "amb: 匹配到 %d 个应用，但当前不是交互终端，无法选择。请改用完整包名：\n", total)
 		for _, a := range all[:shown] {
 			fmt.Fprintf(os.Stderr, "         %-36s %s\n", a.label, a.pkg)
 		}
 		return "", 2
 	}
-	fmt.Fprintf(os.Stderr, "adbctl: 匹配到 %d 个应用（按匹配度排序）:\n", total)
+	fmt.Fprintf(os.Stderr, "amb: 匹配到 %d 个应用（按匹配度排序）:\n", total)
 	for i, a := range all[:shown] {
 		fmt.Fprintf(os.Stderr, "  %2d) %-36s %s\n", i+1, a.label, a.pkg)
 	}
@@ -832,16 +925,16 @@ func resolveApp(target, q string) (string, int) {
 	ans := readLine()
 	switch {
 	case ans == "" || ans == "q" || ans == "Q":
-		fmt.Fprintln(os.Stderr, "adbctl: 已取消。")
+		fmt.Fprintln(os.Stderr, "amb: 已取消。")
 		return "", 3
 	}
 	n, err := strconv.Atoi(ans)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "adbctl: 序号无效。")
+		fmt.Fprintln(os.Stderr, "amb: 序号无效。")
 		return "", 2
 	}
 	if n < 1 || n > total {
-		fmt.Fprintf(os.Stderr, "adbctl: 序号超出范围（1-%d）。\n", total)
+		fmt.Fprintf(os.Stderr, "amb: 序号超出范围（1-%d）。\n", total)
 		return "", 2
 	}
 	return all[n-1].pkg, 0
@@ -849,6 +942,135 @@ func resolveApp(target, q string) (string, int) {
 
 func stdinIsTerminal() bool {
 	return isTerminal(os.Stdin.Fd())
+}
+
+// ---------------- tcpip 子命令 ----------------
+
+// cmdTcpip 等价于 adb tcpip <端口>，但先选设备。
+//
+//	amb tcpip 5555   把设备切到固定端口 5555（默认就是 5555）
+//
+// 多台设备时列序号让你选；只有一台直接用。
+// 这一步是"免手动重连"的前提：切过一次固定端口后，手机离开 Wi-Fi 再回来，
+// amb 也能通过 adb 的 _adb._tcp 广播自动发现并连上（无线调试开关断网即失效）。
+func cmdTcpip(portArg, route string, waitSec int) int {
+	port := portArg
+	if port == "" {
+		port = "5555"
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		fmt.Fprintf(os.Stderr, "amb: tcpip 需要一个端口号，如 amb tcpip 5555（收到 '%s'）\n", portArg)
+		return 2
+	}
+
+	// 设备来源：默认先看 USB（插线时最典型），-W 则只看无线候选
+	var serials []string
+	var labels []string
+	if route != "wifi" {
+		for _, d := range usbDevices() {
+			serials = append(serials, d.serial)
+			labels = append(labels, d.label)
+		}
+	}
+	if len(serials) == 0 {
+		// 没有 USB 设备（或 -W）：从无线候选里挑
+		deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
+		var cands []string
+		for {
+			cands = connectCandidates()
+			if len(cands) > 0 {
+				break
+			}
+			if time.Now().Before(deadline) {
+				time.Sleep(time.Second)
+				continue
+			}
+			break
+		}
+		if len(cands) == 0 {
+			fmt.Fprintln(os.Stderr, "amb: tcpip 需要一台设备，但没有找到 USB 设备，也没发现无线候选。")
+			fmt.Fprintln(os.Stderr, "         请用 USB 连接手机并开启『USB 调试』，或用 -w N 等无线广播出现。")
+			return 1
+		}
+		serials = cands
+		labels = nil
+	}
+
+	target, code := chooseOne(serials, labels)
+	if code != 0 {
+		return code
+	}
+
+	fmt.Fprintf(os.Stderr, "amb: 对 %s 执行 adb tcpip %s …\n", target, port)
+	out, err := adbCaptureAll("-s", target, "tcpip", port)
+	if strings.TrimSpace(out) != "" {
+		fmt.Fprint(os.Stderr, out)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "amb: 切换失败：%v\n", err)
+		fmt.Fprintln(os.Stderr, "         检查：1) 设备已连接且已授权  2) 端口在 1-65535 之间")
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "amb: 已切到固定端口 %s。\n", port)
+	fmt.Fprintln(os.Stderr, "       现在可以拔线；之后手机离开 Wi-Fi 再回来，amb 也能自动发现并连上。")
+	// stdout 只输出选中的设备，保持"stdout 只放选中目标"的约定
+	fmt.Println(target)
+	return 0
+}
+
+// ---------------- 多设备选择 ----------------
+
+// chooseOne 从多个候选里让用户选一个。
+//
+//	items  候选（序列号或 IP:PORT）
+//	labels 与 items 一一对应的说明（可为 nil）
+//
+// 返回选中的那个；退出码：0 成功，2 需选择但不可选，3 用户取消。
+// 只有一项时直接返回它，不弹选择。
+func chooseOne(items []string, labels []string) (string, int) {
+	if len(items) == 1 {
+		return items[0], 0
+	}
+	if len(items) == 0 {
+		return "", 2
+	}
+	if !stdinIsTerminal() {
+		fmt.Fprintf(os.Stderr, "amb: 检测到 %d 台可连设备，但当前不是交互终端，无法选择：\n", len(items))
+		for i, it := range items {
+			if labels != nil && i < len(labels) && labels[i] != "" {
+				fmt.Fprintf(os.Stderr, "         %-24s %s\n", it, labels[i])
+			} else {
+				fmt.Fprintf(os.Stderr, "         %s\n", it)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "        （无第二合法出口：请在交互终端里重试）")
+		return "", 2
+	}
+	fmt.Fprintf(os.Stderr, "amb: 检测到 %d 台可连设备，请指定用哪一台：\n", len(items))
+	for i, it := range items {
+		if labels != nil && i < len(labels) && labels[i] != "" {
+			fmt.Fprintf(os.Stderr, "  %2d) %-24s %s\n", i+1, it, labels[i])
+		} else {
+			fmt.Fprintf(os.Stderr, "  %2d) %s\n", i+1, it)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "请输入序号 [1-%d]，q 取消: ", len(items))
+	ans := readLine()
+	switch {
+	case ans == "" || ans == "q" || ans == "Q":
+		fmt.Fprintln(os.Stderr, "amb: 已取消。")
+		return "", 3
+	}
+	n, err := strconv.Atoi(ans)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "amb: 序号无效。")
+		return "", 2
+	}
+	if n < 1 || n > len(items) {
+		fmt.Fprintf(os.Stderr, "amb: 序号超出范围（1-%d）。\n", len(items))
+		return "", 2
+	}
+	return items[n-1], 0
 }
 
 func readLine() string {
@@ -881,17 +1103,17 @@ func launchOrExit(target, transport string, audioOnly, doScrcpy, doListApps bool
 	if app != "" {
 		spec, stop := parseAppSpec(app)
 		if spec == "" {
-			fmt.Fprintln(os.Stderr, "adbctl: -a 需要应用名或包名（-h 看用法）")
+			fmt.Fprintln(os.Stderr, "amb: -a 需要应用名或包名（-h 看用法）")
 			return 2
 		}
 		pkg, rc := resolveApp(target, spec)
 		if rc != 0 {
 			if rc == 1 {
-				fmt.Fprintf(os.Stderr, "adbctl: 没有匹配到应用「%s」。用 adbctl --list-apps 查看全部应用。\n", spec)
+				fmt.Fprintf(os.Stderr, "amb: 没有匹配到应用「%s」。用 amb --list-apps 查看全部应用。\n", spec)
 			}
 			return rc
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: 应用已解析 -> %s\n", pkg)
+		fmt.Fprintf(os.Stderr, "amb: 应用已解析 -> %s\n", pkg)
 		if !strings.Contains(" "+scrcpyArgsValue(transport, audioOnly)+" ", " --new-display") {
 			appargs = append(appargs, "--new-display")
 		}
@@ -900,12 +1122,12 @@ func launchOrExit(target, transport string, audioOnly, doScrcpy, doListApps bool
 		} else {
 			appargs = append(appargs, "--start-app="+pkg)
 		}
-		fmt.Fprintf(os.Stderr, "adbctl: 单应用模式：虚拟显示 + 启动 %s（手机主屏不受影响）\n", pkg)
+		fmt.Fprintf(os.Stderr, "amb: 单应用模式：虚拟显示 + 启动 %s（手机主屏不受影响）\n", pkg)
 	}
 	if doScrcpy {
 		args := append([]string{"-s", target}, appargs...)
 		args = append(args, strings.Fields(scrcpyArgsValue(transport, audioOnly))...)
-		fmt.Fprintf(os.Stderr, "adbctl: 启动 scrcpy -s %s %s\n", target, strings.Join(args[2:], " "))
+		fmt.Fprintf(os.Stderr, "amb: 启动 scrcpy -s %s %s\n", target, strings.Join(args[2:], " "))
 		return runAttached(scrcpyPath, args)
 	}
 	return 0

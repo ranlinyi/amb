@@ -25,6 +25,10 @@ const (
 )
 
 func scrcpyURL() string {
+	// AMB_SCRCPY_URL 优先；旧名 ADBCTL_SCRCPY_URL 仍兼容
+	if v := os.Getenv("AMB_SCRCPY_URL"); v != "" {
+		return v
+	}
 	if v := os.Getenv("ADBCTL_SCRCPY_URL"); v != "" {
 		return v
 	}
@@ -32,6 +36,10 @@ func scrcpyURL() string {
 }
 
 func scrcpySumsURL() string {
+	// AMB_SCRCPY_SUMS_URL 优先；旧名 ADBCTL_SCRCPY_SUMS_URL 仍兼容
+	if v := os.Getenv("AMB_SCRCPY_SUMS_URL"); v != "" {
+		return v
+	}
 	if v := os.Getenv("ADBCTL_SCRCPY_SUMS_URL"); v != "" {
 		return v
 	}
@@ -82,7 +90,7 @@ func resolveExternal() error {
 
 	// 1) 缓存里已部署过：直接用，可离线
 	if rep.cacheAdb != "" && rep.cacheScrcpy != "" {
-		fmt.Fprintf(os.Stderr, "adbctl: 使用已部署的依赖：%s\n", bin)
+		fmt.Fprintf(os.Stderr, "amb: 使用已部署的依赖：%s\n", bin)
 		payloadRoot = root
 		payloadBinDir = bin
 		adbPath, scrcpyPath, serverPath = cacheAdb, cacheScrcpy, cacheServer
@@ -91,7 +99,7 @@ func resolveExternal() error {
 
 	// 2) 系统两个都有：直接用，不下载、不占额外空间
 	if sysAdb != "" && sysScrcpy != "" {
-		fmt.Fprintln(os.Stderr, "adbctl: 检测到系统中已有 adb 与 scrcpy，直接使用（不下载、不占额外空间）。")
+		fmt.Fprintln(os.Stderr, "amb: 检测到系统中已有 adb 与 scrcpy，直接使用（不下载、不占额外空间）。")
 		adbPath, scrcpyPath = sysAdb, sysScrcpy
 		serverPath = ""
 		payloadRoot = ""
@@ -100,12 +108,12 @@ func resolveExternal() error {
 	}
 
 	// 3) 缺依赖：下载官方 scrcpy 包（自带 adb + scrcpy + scrcpy-server）
-	fmt.Fprintf(os.Stderr, "adbctl: 依赖不完整（adb=%s，scrcpy=%s）\n", orNone(sysAdb), orNone(sysScrcpy))
-	fmt.Fprintf(os.Stderr, "adbctl: 首次使用会下载官方 scrcpy v%s（约 18MB）并校验 SHA256，之后复用。\n", scrcpyVersion)
+	fmt.Fprintf(os.Stderr, "amb: 依赖不完整（adb=%s，scrcpy=%s）\n", orNone(sysAdb), orNone(sysScrcpy))
+	fmt.Fprintf(os.Stderr, "amb: 首次使用会下载官方 scrcpy v%s（约 18MB）并校验 SHA256，之后复用。\n", scrcpyVersion)
 	if err := deployScrcpyBundle(root); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "adbctl: 依赖已部署完成。")
+	fmt.Fprintln(os.Stderr, "amb: 依赖已部署完成。")
 	adbPath, scrcpyPath, serverPath = cacheAdb, cacheScrcpy, cacheServer
 	if sysAdb != "" && fileExists(sysAdb) {
 		adbPath = sysAdb
@@ -121,7 +129,7 @@ func deployScrcpyBundle(root string) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp(parent, "adbctl-dl-")
+	tmp, err := os.MkdirTemp(parent, "amb-dl-")
 	if err != nil {
 		return err
 	}
@@ -130,16 +138,16 @@ func deployScrcpyBundle(root string) error {
 	sumsPath := filepath.Join(tmp, "SHA256SUMS.txt")
 	tarPath := filepath.Join(tmp, scrcpyTarName)
 
-	fmt.Fprintln(os.Stderr, "adbctl:   [1/4] 下载校验清单 …")
+	fmt.Fprintln(os.Stderr, "amb:   [1/4] 下载校验清单 …")
 	if err := downloadFile(scrcpySumsURL(), sumsPath); err != nil {
 		return fmt.Errorf("下载 SHA256SUMS.txt 失败：%w", err)
 	}
-	fmt.Fprintf(os.Stderr, "adbctl:   [2/4] 下载 %s …\n", scrcpyTarName)
+	fmt.Fprintf(os.Stderr, "amb:   [2/4] 下载 %s …\n", scrcpyTarName)
 	if err := downloadFile(scrcpyURL(), tarPath); err != nil {
 		return fmt.Errorf("下载 scrcpy 包失败：%w", err)
 	}
 
-	fmt.Fprintln(os.Stderr, "adbctl:   [3/4] 校验 SHA256 …")
+	fmt.Fprintln(os.Stderr, "amb:   [3/4] 校验 SHA256 …")
 	want, err := expectedSHA256(sumsPath, scrcpyTarName)
 	if err != nil {
 		return err
@@ -152,8 +160,8 @@ func deployScrcpyBundle(root string) error {
 		return fmt.Errorf("scrcpy 包 SHA256 校验失败：期望 %s，实际 %s（已丢弃，请重试）", want, got)
 	}
 
-	fmt.Fprintln(os.Stderr, "adbctl:   [4/4] 解压到缓存 …")
-	stage, err := os.MkdirTemp(parent, "adbctl-stage-")
+	fmt.Fprintln(os.Stderr, "amb:   [4/4] 解压到缓存 …")
+	stage, err := os.MkdirTemp(parent, "amb-stage-")
 	if err != nil {
 		return err
 	}
@@ -234,7 +242,7 @@ func downloadFile(url, dest string) error {
 			return nil
 		}
 		if attempt < 3 {
-			fmt.Fprintf(os.Stderr, "adbctl:   下载中断（%v），重试 %d/3 …\n", lastErr, attempt+1)
+			fmt.Fprintf(os.Stderr, "amb:   下载中断（%v），重试 %d/3 …\n", lastErr, attempt+1)
 			time.Sleep(time.Duration(attempt) * 2 * time.Second)
 		}
 	}
@@ -251,7 +259,7 @@ func downloadOnce(url, dest string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "adbctl/"+appVersion)
+	req.Header.Set("User-Agent", "amb/"+appVersion)
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}

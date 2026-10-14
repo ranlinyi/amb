@@ -5,27 +5,30 @@
 #
 # 可选环境变量：
 #   GITHUB_OWNER   默认 ranlinyi
-#   REPO_NAME      默认 adbctl-portable
-#   TAG            默认 v1.0.0
-#   RELEASE_TITLE  默认 adbctl 1.0.0（自包含单文件便携版）
+#   REPO_NAME      默认 amb
+#   TAG            默认 v1.2.0
+#   RELEASE_TITLE  默认 amb 1.2.0（自包含单文件便携版）
 #
 # 需要：git、curl、一个对仓库有 repo/contents 写权限的 PAT。
 set -euo pipefail
 
 OWNER="${GITHUB_OWNER:-ranlinyi}"
-REPO="${REPO_NAME:-adbctl-portable}"
-TAG="${TAG:-v1.0.0}"
-TITLE="${RELEASE_TITLE:-adbctl 1.0.0（自包含单文件便携版）}"
+REPO="${REPO_NAME:-amb}"
+TAG="${TAG:-v1.2.0}"
+TITLE="${RELEASE_TITLE:-amb 1.2.0（自包含单文件便携版）}"
 API="https://api.github.com"
 UPLOADS="https://uploads.github.com"
 
-# 未显式设置时，回退到 ~/.config/adbctl/github_token（0600），便于直接跑 ./publish.sh
-if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.config/adbctl/github_token" ]; then
+# 未显式设置时，回退到 ~/.config/amb/github_token（0600），便于直接跑 ./publish.sh
+# 旧路径 ~/.config/adbctl/github_token 仍兼容（老用户不用挪文件）
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.config/amb/github_token" ]; then
+  GITHUB_TOKEN="$(tr -d ' \t\r\n' < "$HOME/.config/amb/github_token")"
+elif [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.config/adbctl/github_token" ]; then
   GITHUB_TOKEN="$(tr -d ' \t\r\n' < "$HOME/.config/adbctl/github_token")"
 fi
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "错误：请设置 GITHUB_TOKEN，或把令牌写入 ~/.config/adbctl/github_token" >&2
+  echo "错误：请设置 GITHUB_TOKEN，或把令牌写入 ~/.config/amb/github_token" >&2
   echo "  GITHUB_TOKEN=ghp_xxx ./publish.sh" >&2
   exit 1
 fi
@@ -56,7 +59,7 @@ else
     -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
     -H "Content-Type: application/json" \
     "$API/user/repos" \
-    -d "{\"name\":\"$REPO\",\"private\":false,\"description\":\"adbctl 自包含单文件版：内嵌 adb + scrcpy，支持 Windows/Linux\"}"
+    -d "{\"name\":\"$REPO\",\"private\":false,\"description\":\"amb — Android Mirror Bridge（安卓镜像桥）自包含单文件版：内嵌 adb + scrcpy，支持 Windows/Linux\"}"
   echo "仓库已创建"
 fi
 
@@ -86,7 +89,7 @@ fi
 echo "== 4/5 上传便携版二进制 =="
 EXISTING="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
   "$API/repos/$OWNER/$REPO/releases/$REL_ID/assets")"
-for f in dist/adbctl-linux-x86_64 dist/adbctl-windows-x86_64.exe dist/adbctl-linux-x86_64-lite dist/SHA256SUMS; do
+for f in dist/amb-linux-x86_64 dist/amb-windows-x86_64.exe dist/amb-linux-x86_64-lite dist/SHA256SUMS; do
   if [ ! -f "$f" ]; then
     echo "缺少 $f，请先运行 ./build.sh" >&2
     exit 1

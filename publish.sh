@@ -64,11 +64,17 @@ else
 fi
 
 echo "== 2/5 推送 main =="
-git remote remove origin 2>/dev/null || true
-git remote add origin "https://github.com/$OWNER/$REPO.git"
-git -c credential.helper= \
-  -c credential.helper='!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f' \
-  push -u origin main
+# 已有可用的 SSH remote 就直接用（本机 git 配置了 url.git@github.com:.insteadof https://github.com/）；
+# 只有不存在 origin 时才回退到令牌 + HTTPS 推送。
+if git remote get-url origin >/dev/null 2>&1; then
+  echo "沿用已有 remote: $(git remote get-url origin)"
+  git push -u origin main
+else
+  git remote add origin "git@github.com:$OWNER/$REPO.git"
+  git -c credential.helper= \
+    -c credential.helper='!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f' \
+    push -u origin main
+fi
 
 echo "== 3/5 创建或复用 Release $TAG =="
 REL="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \

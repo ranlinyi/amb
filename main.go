@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const appVersion = "1.3.0"
+const appVersion = "1.4.0"
 
 const scrcpyArgsDefault = "--video-codec=h265 --video-bit-rate=20M --max-size=1600 --max-fps=60 --video-buffer=0"
 
@@ -747,6 +747,54 @@ func mdnsRaw() string {
 	return strings.ReplaceAll(out, "\r", "")
 }
 
+// mdnsService 一行 mDNS 广播解析后的结构。
+type mdnsService struct {
+	instance string // 实例名，如 adb-df0b9dd1-e1Ypfk / adb-df0b9dd1
+	service  string // 服务类型，如 _adb-tls-connect._tcp
+	addr     string // IP:端口
+}
+
+// parseMdns 解析 adb mdns services 的输出。
+// 格式：<实例名>\t<服务类型>\t<IP:端口>
+func parseMdns(raw string) []mdnsService {
+	var out []mdnsService
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "List of") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		addr := ipPortRe.FindString(f[len(f)-1])
+		if addr == "" {
+			continue
+		}
+		out = append(out, mdnsService{instance: f[0], service: f[1], addr: addr})
+	}
+	return out
+}
+
+// deviceKey 从 mDNS 实例名提取"设备指纹"，用于把同一台设备的多个广播归成一组。
+//
+// adb 对同一台设备会广播两种服务，实例名不同但同源：
+//
+//	adb-df0b9dd1-e1Ypfk	_adb-tls-connect._tcp	192.168.0.6:41839   ← 无线调试，随机端口
+//	adb-df0b9dd1	_adb._tcp	        192.168.0.6:5555    ← tcpip 固定端口
+//
+// 后缀 -e1Ypfk 是 adb 给 TLS 服务加的区分尾巴，前缀 adb-df0b9dd1 才是设备指纹。
+// 取第一段（adb-<指纹>）作为归组键，两台不同设备的指纹不同，不会误并。
+func deviceKey(instance string) string {
+	// 去掉 "adb-" 前缀后按 "-" 切第一段
+	s := strings.TrimPrefix(instance, "adb-")
+	if i := strings.IndexByte(s, '-'); i > 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// extractAddrs 兼容旧调用：只取某类服务的地址（不再用于主路径）。
 func extractAddrs(raw, service string) []string {
 	var out []string
 	for _, line := range strings.Split(raw, "\n") {
@@ -758,22 +806,157 @@ func extractAddrs(raw, service string) []string {
 	return out
 }
 
-// 候选顺序：已连上的 > WIFI_ADDR > 无线调试(TLS) > 固定端口(_adb._tcp)。
+// 候选顺序：已连上的 > WIFI_ADDR > 其余按设备归组后的 mDNS 代表地址。
 // 已连上的排最前，避免对残留的陈旧 mDNS 广播做无谓 connect。
+//
+// 注意只做一次设备归组：早先版本把"已连地址"和"mDNS 广播"分两次归组，
+// 导致同一台设备（一个端口已连、另一个端口只在广播里）被列出两个地址。
 func connectCandidates() []string {
-	raw := mdnsRaw()
-	var cands []string
-	for _, a := range connectedAddrs() {
-		if strings.Contains(raw, a) {
-			cands = append(cands, a)
+	svcs := parseMdns(mdnsRaw())
+	connected := connectedAddrs()
+
+	// 一次归组：每组产出一个代表地址（已连端口优先）
+	reps := collapseByDevice(svcs, connected)
+
+	// 把"已连上的"挑到最前，其余保持原有顺序
+	connSet := map[string]bool{}
+	for _, a := range connected {
+		connSet[a] = true
+	}
+	var head, tail []string
+	for _, a := range reps {
+		if connSet[a] {
+			head = append(head, a)
+		} else {
+			tail = append(tail, a)
 		}
 	}
+
+	var cands []string
+	cands = append(cands, head...)
+	// WIFI_ADDR 是用户显式指定的，紧随已连地址之后
 	if a := os.Getenv("WIFI_ADDR"); a != "" {
 		cands = append(cands, a)
 	}
-	cands = append(cands, extractAddrs(raw, connSvc)...)
-	cands = append(cands, extractAddrs(raw, legacySvc)...)
+	cands = append(cands, tail...)
 	return dedupe(cands)
+}
+
+// collapseByDevice 把同一台设备的多个入口塌缩成一个代表地址。
+//
+// 同一台手机常同时广播两个服务（无线调试随机端口 + tcpip 固定端口），
+// 老逻辑只按 "IP:端口" 字符串去重，于是同一台设备被当成两台列出来；
+// 甚至连上之后 adb devices 也会显示两条（两个端口都连着）。
+// 现在按设备指纹分组，每组按下面的优先级挑一个代表：
+//
+//	已连上的 > 固定端口(_adb._tcp) > 无线调试(_adb-tls-connect._tcp)
+//
+// 固定端口优先于随机端口：它跨网络中断存活，是"免手动重连"依赖的那个。
+// connected 传已连接的地址集合（可为 nil），用于让"已连上的"优先当选。
+func collapseByDevice(svcs []mdnsService, connected []string) []string {
+	type group struct {
+		key    string
+		conn   []string // _adb-tls-connect._tcp（随机端口）
+		legacy []string // _adb._tcp（固定端口）
+		other  []string // 无法归类到已知服务类型的地址
+	}
+	groups := map[string]*group{}
+	var order []string
+
+	getGroup := func(k string) *group {
+		g, ok := groups[k]
+		if !ok {
+			g = &group{key: k}
+			groups[k] = g
+			order = append(order, k)
+		}
+		return g
+	}
+
+	// 已连接的地址：按 IP 归组（此时没有实例名可用，IP 就是最好的指纹）
+	connSet := map[string]bool{}
+	for _, a := range connected {
+		connSet[a] = true
+	}
+	connByIP := map[string][]string{}
+	for _, a := range connected {
+		ip := addrIP(a)
+		if ip == "" {
+			continue
+		}
+		connByIP[ip] = append(connByIP[ip], a)
+	}
+
+	// mDNS 服务按设备指纹分组
+	ipToKey := map[string]string{} // IP -> 组 key，供已连地址回填用
+	for _, s := range svcs {
+		k := deviceKey(s.instance)
+		g := getGroup(k)
+		if ip := addrIP(s.addr); ip != "" {
+			ipToKey[ip] = k
+		}
+		switch {
+		case strings.Contains(s.service, connSvc):
+			g.conn = append(g.conn, s.addr)
+		case strings.Contains(s.service, legacySvc):
+			g.legacy = append(g.legacy, s.addr)
+		default:
+			g.other = append(g.other, s.addr)
+		}
+	}
+
+	// 已连接的地址：若能按 IP 找到对应 mDNS 组就并进去（同一台设备的两个端口）；
+	// 找不到（mDNS 里没这台）才按 IP 单独成组。
+	for ip, addrs := range connByIP {
+		if k, ok := ipToKey[ip]; ok {
+			g := groups[k]
+			g.other = append(g.other, addrs...)
+			continue
+		}
+		if _, ok := groups[ip]; ok {
+			continue
+		}
+		g := getGroup(ip)
+		g.other = append(g.other, addrs...)
+	}
+
+	var out []string
+	for _, k := range order {
+		g := groups[k]
+		all := append(append(append([]string{}, g.legacy...), g.conn...), g.other...)
+		pick := ""
+		// 1) 已连上的优先
+		for _, a := range all {
+			if connSet[a] {
+				pick = a
+				break
+			}
+		}
+		// 2) 固定端口（跨断网存活，免手动重连靠它）
+		if pick == "" && len(g.legacy) > 0 {
+			pick = g.legacy[0]
+		}
+		// 3) 无线调试随机端口
+		if pick == "" && len(g.conn) > 0 {
+			pick = g.conn[0]
+		}
+		// 4) 兜底
+		if pick == "" && len(g.other) > 0 {
+			pick = g.other[0]
+		}
+		if pick != "" {
+			out = append(out, pick)
+		}
+	}
+	return out
+}
+
+// addrIP 从 "IP:端口" 里取 IP 部分；取不到返回空串。
+func addrIP(addrPort string) string {
+	if i := strings.LastIndexByte(addrPort, ':'); i > 0 {
+		return addrPort[:i]
+	}
+	return ""
 }
 
 // connectedAddrs 返回 adb devices 中已处于 device 状态的 IP:端口 地址。

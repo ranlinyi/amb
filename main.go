@@ -11,6 +11,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1173,13 +1174,20 @@ func sweepSessions() {
 	}
 }
 
-// processAlive 判断 PID 是否存在（Unix: kill(pid, 0)；无权限也算存在）。
+// processAlive 判断 PID 是否存在（给 0 号信号：发了但不产生动作）。
+// 用 os.Process.Signal 而不是 syscall.Kill —— 后者在 Windows 上不存在，
+// 而这个项目要交叉编译 Windows 版。
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	// EPERM：进程存在但不属于当前用户 —— 也算"活着"
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // cmdRd 处理 amb rd：查看 / 重新指定 / 清除当前终端的设备绑定。

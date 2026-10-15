@@ -20,11 +20,8 @@ API="https://api.github.com"
 UPLOADS="https://uploads.github.com"
 
 # 未显式设置时，回退到 ~/.config/amb/github_token（0600），便于直接跑 ./publish.sh
-# 旧路径 ~/.config/adbctl/github_token 仍兼容（老用户不用挪文件）
 if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.config/amb/github_token" ]; then
   GITHUB_TOKEN="$(tr -d ' \t\r\n' < "$HOME/.config/amb/github_token")"
-elif [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.config/adbctl/github_token" ]; then
-  GITHUB_TOKEN="$(tr -d ' \t\r\n' < "$HOME/.config/adbctl/github_token")"
 fi
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then

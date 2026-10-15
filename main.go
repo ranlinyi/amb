@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-const appVersion = "1.2.0"
+const appVersion = "1.3.0"
 
 const scrcpyArgsDefault = "--video-codec=h265 --video-bit-rate=20M --max-size=1600 --max-fps=60 --video-buffer=0"
 
@@ -51,23 +51,32 @@ var ipPortRe = regexp.MustCompile("([0-9]{1,3}\\.){3}[0-9]{1,3}:[0-9]{1,5}")
 var usageText = strings.Join([]string{
 	"amb — Android Mirror Bridge（安卓镜像桥）",
 	"",
-	"  Android 设备一键连接 / 投屏：有 USB 走 USB，没有才走无线调试。",
-	"  多台设备可连时，会列出设备让你指定，绝不静默选第一台。",
+	"  Android 设备投屏 / 控制：先列出可连设备让你指定，**不会自动连接**；",
+	"  一旦指定，同一终端里后续命令都沿用该设备，直到重新指定或清除。",
 	"",
-	"  amb                 # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址",
+	"  amb                 # 列出所有可连设备，询问连接哪个（不自动连）",
 	"  amb -S              # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）",
 	"  amb -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S",
 	"  amb -a 计算器 -S                # 模糊匹配：唯一命中直接用；多个则按匹配度列出序号让你选",
 	"  amb -a +微信 -S                 # 前缀 + = 启动前先强杀该应用；? 前缀=模糊（本程序默认就是模糊）",
 	"  amb --list-apps                 # 列出设备上全部应用（应用名 + 包名）",
 	"  amb -A            # 纯音频模式：只把手机声音转到电脑（手机自动静音）；隐含 -S",
-	"  amb -U            # 强制走 USB；当前没有在位 USB 设备则报错退出",
-	"  amb -W            # 强制走无线（忽略在位的 USB）",
+	"  amb -U            # 只从 USB 设备里找（没有则报错退出）",
+	"  amb -W            # 只从无线候选里找（忽略在位的 USB）",
 	"  amb -p 748966     # 无线配对（748966 = 手机上显示的 6 位配对码）；隐含 -W",
-	"  amb -l            # 只列出无线候选地址，不做任何连接（无线专用）",
+	"  amb -l            # 只列出可连设备，不连接、不询问",
 	"  amb -w 30         # 最多等 30 秒等 mDNS 广播出现（默认 0 = 只查一次）",
 	"  amb tcpip 5555    # 等价于 adb tcpip 5555：把设备切到固定端口，之后免手动重连",
+	"  amb rd            # 查看当前终端绑定的设备",
+	"  amb rd <设备>     # 重新指定设备（序列号或 IP:端口）",
+	"  amb rd null       # 清除当前终端的设备绑定",
 	"  amb -h            # 帮助",
+	"",
+	"设备绑定（终端会话）:",
+	"  第一次指定设备后，amb 会把它记在当前终端（按父进程 PID 区分）下；",
+	"  同一终端后续的 amb 命令都直接用该设备，不再重复询问。",
+	"  换设备：amb rd <新设备>；清除绑定：amb rd null；",
+	"  新开一个终端 = 新的会话，会重新询问。",
 	"",
 	"免手动重连（断网外出场景）:",
 	"  在能连上的时候执行一次  amb tcpip 5555；之后手机离开 Wi-Fi 几小时再回来，",
@@ -78,28 +87,27 @@ var usageText = strings.Join([]string{
 	"  amb --check-deps  # 扫描依赖是否存在（省空间版；只扫描不下载，别名 --scan）",
 	"",
 	"这个程序会执行什么（副作用全部明列，只有这几条）:",
-	"  * adb devices -l                    查询式，只读（判断有没有 USB、枚举多台设备）",
+	"  * adb devices -l                    查询式，只读（枚举 USB 设备）",
 	"  * adb mdns services                 查询式，只读（仅无线路径）",
 	"  * adb pair <配对地址> <配对码>      仅当给了 -p",
-	"  * adb connect <候选地址>            仅无线路径，逐个候选试，成功即停",
+	"  * adb connect <你指定的地址>        仅无线路径，且只连你指定的那一个",
 	"  * adb -s <设备> tcpip <端口>        仅当给了 tcpip 子命令",
 	"  * adb shell -n pm list packages     仅 -a 的精确包名快速通道，只读",
 	"  * scrcpy -s <目标> --list-apps      仅当 --list-apps，或 -a 需要解析应用名时",
 	"  * scrcpy -s <目标> [--new-display --start-app=<包名>] $SCRCPY_ARGS",
 	"                                      仅当给了 -S / -a",
 	"  不写任何文件到当前目录；不用 sudo；不扫端口；除 adb 自身的连接外不联网。",
-	"  （唯一写入：内嵌版首次运行释放依赖；省空间版缺依赖时下载到用户缓存）",
+	"  （写入仅两处：内嵌版首次运行释放依赖；终端设备绑定写到用户缓存，可用 amb rd null 清除）",
 	"",
 	"选路优先级:",
 	"  -p / -l / -W  -> 无线",
-	"  -U            -> USB（没有则退出码 1）",
-	"  默认（无参数）-> 有 USB 设备就用 USB；没有才回落到无线",
+	"  -U            -> 只找 USB（没有则退出码 1）",
+	"  默认（无参数）-> USB 与无线候选一起列出，让你指定",
 	"  USB 判定依据：adb devices -l 中 state=device 且带 \" usb:\" 标记的那一行",
 	"",
 	"多设备选择:",
-	"  USB 路径检测到多台在位设备时，列出全部设备让你选序号；",
-	"  无线路径有多个候选地址时，同样列出让你选（q 取消）。",
-	"  只有一台时直接用它，不弹选择。非交互终端拒绝选择，提示用 -s 指定（见下）。",
+	"  检测到多台可连设备时，列出全部设备让你选序号（q 取消）。",
+	"  非交互终端拒绝选择：请改用 amb rd <设备> 先指定，或确保只有一台设备在线。",
 	"",
 	"环境变量:",
 	"  ADB                    指定 adb（默认用内嵌/系统的 adb）",
@@ -163,12 +171,12 @@ func run() int {
 	pairCode := ""
 	waitSec := 0
 	app := ""
-	subCmd := "" // 子命令：tcpip
-	subArg := "" // 子命令的参数：tcpip 的端口
+	subCmd := "" // 子命令：tcpip / rd
+	subArg := "" // 子命令的参数：tcpip 的端口 / rd 的设备
 
 	args := os.Args[1:]
-	// 第一个不以 "-" 开头的参数视为子命令（目前只有 tcpip）。
-	// 这样 amb tcpip 5555 与 amb -W tcpip 5555 都能工作。
+	// 第一个不以 "-" 开头的参数视为子命令（tcpip / rd）。
+	// 这样 amb tcpip 5555、amb rd null、amb -W tcpip 5555 都能工作。
 	for i := 0; i < len(args); i++ {
 		if !strings.HasPrefix(args[i], "-") {
 			subCmd = args[i]
@@ -204,8 +212,9 @@ func run() int {
 		case "-W", "--wifi":
 			route = "wifi"
 		case "-l", "--list":
+			// 只列设备、不连接、不询问。不再强制无线：
+			// -U -l 只列 USB，-W -l 只列无线，不带则两者都列。
 			doList = true
-			route = "wifi"
 		case "-p", "--pair":
 			pairCode = takeValue(args, &i)
 			route = "wifi"
@@ -271,67 +280,69 @@ func run() int {
 		return 127
 	}
 
+	// ---------- rd 子命令 ----------
+	// amb rd / amb rd <设备> / amb rd null —— 查看 / 指定 / 清除当前终端的设备绑定。
+	if subCmd == "rd" {
+		return cmdRd(subArg)
+	}
+
 	// ---------- tcpip 子命令 ----------
 	// 等价于 adb tcpip <端口>，但先帮你选设备（多台时不静默挑第一台）。
-	// 放在 USB 路径之前：tcpip 自己会按 route 决定查 USB 还是查无线，
+	// 放在设备枚举之前：tcpip 自己会按 route 决定查 USB 还是查无线，
 	// 且打错端口号时不该先白跑一次设备枚举。
 	if subCmd == "tcpip" {
 		return cmdTcpip(subArg, route, waitSec)
 	}
 
-	// ---------- USB 路径 ----------
+	// ---------- 设备枚举 ----------
+	// 默认（无 -U/-W）把 USB 与无线候选合并后一起列出，让用户指定；
+	// 已绑定的设备排在第一位并标注"当前"，不重复询问。
+	var devs []deviceInfo
 	if route != "wifi" {
-		usbDevs := usbDevices()
-		if len(usbDevs) > 0 {
-			serials := make([]string, len(usbDevs))
-			labels := make([]string, len(usbDevs))
-			for i, d := range usbDevs {
-				serials[i] = d.serial
-				labels[i] = d.label
-			}
-			usb, code := chooseOne(serials, labels)
-			if code != 0 {
-				return code
-			}
-			fmt.Fprintf(os.Stderr, "amb: 检测到 USB 设备，走有线：%s\n", usb)
-			fmt.Println(usb)
-			return launchOrExit(usb, "usb", audioOnly, doScrcpy, doListApps, app)
-		}
-		if route == "usb" {
-			fmt.Fprintln(os.Stderr, "amb: -U 指定走 USB，但当前没有在位的 USB 设备。")
-			fmt.Fprintln(os.Stderr, "         检查：1) 数据线已插好  2) 手机的『USB 调试』已授权本机")
-			return 1
-		}
-		fmt.Fprintln(os.Stderr, "amb: 没有 USB 设备，回落到无线调试。")
+		devs = append(devs, usbDevices()...)
 	}
-
-	// ---------- 无线路径 ----------
-	deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
-	var cands []string
-	for {
-		cands = connectCandidates()
-		if len(cands) > 0 {
+	if route != "usb" {
+		deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
+		var cands []string
+		for {
+			cands = connectCandidates()
+			if len(cands) > 0 {
+				break
+			}
+			if time.Now().Before(deadline) {
+				time.Sleep(time.Second)
+				continue
+			}
 			break
 		}
-		if time.Now().Before(deadline) {
-			time.Sleep(time.Second)
-			continue
+		for _, c := range cands {
+			devs = append(devs, deviceInfo{serial: c})
 		}
-		fmt.Fprintf(os.Stderr, "amb: 没有发现任何设备广播（%s / %s）。检查：\n", connSvc, legacySvc)
-		fmt.Fprintln(os.Stderr, "         4. 免手动重连：先在能连上时执行一次 amb tcpip 5555")
-		fmt.Fprintln(os.Stderr, "         1. 手机【无线调试】已开启（Android 11+）")
-		fmt.Fprintln(os.Stderr, "         2. 与电脑同一网段，路由器没开 AP 隔离 / 访客网络隔离")
-		fmt.Fprintln(os.Stderr, "         3. 电脑上别跑 avahi-daemon（会和 adb 抢 5353）")
+	}
+
+	// -U 明确要求只走 USB：一台都没有就直接报错，不回落到无线
+	if route == "usb" && len(devs) == 0 {
+		fmt.Fprintln(os.Stderr, "amb: -U 指定只走 USB，但当前没有在位的 USB 设备。")
+		fmt.Fprintln(os.Stderr, "         检查：1) 数据线已插好  2) 手机的『USB 调试』已授权本机")
 		return 1
 	}
 
 	if doList {
-		for _, c := range cands {
-			fmt.Println(c)
+		// -l：只列设备，不连接、不询问、不写会话
+		if len(devs) == 0 {
+			fmt.Fprintf(os.Stderr, "amb: 没有发现任何设备（%s / %s）。检查：\n", connSvc, legacySvc)
+			fmt.Fprintln(os.Stderr, "         1. 手机【无线调试】已开启（Android 11+）")
+			fmt.Fprintln(os.Stderr, "         2. 与电脑同一网段，路由器没开 AP 隔离 / 访客网络隔离")
+			fmt.Fprintln(os.Stderr, "         3. 电脑上别跑 avahi-daemon（会和 adb 抢 5353）")
+			return 1
+		}
+		for _, d := range devs {
+			fmt.Println(d.serial)
 		}
 		return 0
 	}
 
+	// ---------- 配对（仅无线） ----------
 	if pairCode != "" {
 		paddr := pairingAddress()
 		if paddr == "" {
@@ -346,41 +357,123 @@ func run() int {
 			return 1
 		}
 		time.Sleep(time.Second)
-		cands = connectCandidates()
-		if len(cands) == 0 {
-			fmt.Fprintln(os.Stderr, "amb: 配对成功，但没看到连接服务，请稍后重试连接。")
+		// 配对后重新枚举，把新出现的连接服务加进来
+		cands := connectCandidates()
+		known := make(map[string]bool, len(devs))
+		for _, d := range devs {
+			known[d.serial] = true
+		}
+		for _, c := range cands {
+			if !known[c] {
+				devs = append(devs, deviceInfo{serial: c})
+			}
+		}
+	}
+
+	// ---------- 选设备 ----------
+	// 会话里已绑定的设备优先：同一终端后续命令不再重复询问。
+	target := loadSession()
+	if target != "" {
+		if !containsDevice(devs, target) {
+			// 绑定设备当前离线：提示但不静默切换，交给用户决定
+			fmt.Fprintf(os.Stderr, "amb: 当前终端绑定的设备 %s 现在不在线。\n", target)
+			fmt.Fprintln(os.Stderr, "        （amb rd null 清除绑定；或重新指定 amb rd <设备>）")
+			target = ""
+		} else {
+			fmt.Fprintf(os.Stderr, "amb: 使用当前终端已指定的设备：%s\n", target)
+		}
+	}
+
+	if target == "" {
+		if len(devs) == 0 {
+			fmt.Fprintf(os.Stderr, "amb: 没有发现任何可连设备（%s / %s）。检查：\n", connSvc, legacySvc)
+			fmt.Fprintln(os.Stderr, "         4. 免手动重连：先在能连上时执行一次 amb tcpip 5555")
+			fmt.Fprintln(os.Stderr, "         1. 手机【无线调试】已开启（Android 11+）")
+			fmt.Fprintln(os.Stderr, "         2. 与电脑同一网段，路由器没开 AP 隔离 / 访客网络隔离")
+			fmt.Fprintln(os.Stderr, "         3. 电脑上别跑 avahi-daemon（会和 adb 抢 5353）")
+			return 1
+		}
+		if len(devs) == 1 {
+			// 只有一台：交互终端里仍然问一句（用户要求"不自动连接"），
+			// 但非交互终端直接用它并说明，保住 ADDR=$(amb -W) 这类脚本用法。
+			target = devs[0].serial
+			if stdinIsTerminal() {
+				fmt.Fprintf(os.Stderr, "amb: 只发现一台设备：%s\n", deviceLabel(devs[0]))
+				fmt.Fprint(os.Stderr, "amb: 连接这台？[Y/n/q(取消)] ")
+				ans := readLine()
+				switch strings.ToLower(strings.TrimSpace(ans)) {
+				case "", "y", "yes":
+					// 继续
+				case "q", "n", "no":
+					fmt.Fprintln(os.Stderr, "amb: 已取消，未连接。")
+					return 3
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "amb: 非交互终端，只发现一台设备 %s，直接使用（多台时会拒绝并请你先 amb rd <设备>）。\n", target)
+			}
+		} else {
+			serials := make([]string, len(devs))
+			labels := make([]string, len(devs))
+			for i, d := range devs {
+				serials[i] = d.serial
+				labels[i] = d.label
+			}
+			var code int
+			target, code = chooseOne(serials, labels)
+			if code != 0 {
+				return code
+			}
+		}
+		// 记下本次选择，同一终端后续命令沿用
+		if err := saveSession(target); err != nil {
+			// 绑定失败不影响本次使用，只是不再有"记住设备"的便利
+			fmt.Fprintf(os.Stderr, "amb: 提示：无法记住设备选择（%v），本次仍继续。\n", err)
+		} else {
+			sweepSessions()
+		}
+	}
+
+	// ---------- 连接 ----------
+	transport := "usb"
+	if isWirelessTarget(target) {
+		transport = "wifi"
+		out, _ := adbCaptureAll("connect", target)
+		if !strings.Contains(out, "connected to") {
+			first := out
+			if idx := strings.IndexByte(out, '\n'); idx >= 0 {
+				first = out[:idx]
+			}
+			fmt.Fprintf(os.Stderr, "amb: %s 不可用（%s）\n", target, strings.TrimSpace(first))
+			fmt.Fprintln(os.Stderr, "         如果刚开关过无线调试，等几秒再试；必要时在手机上重新配对。")
 			return 1
 		}
 	}
+	fmt.Fprintf(os.Stderr, "amb: 已连接 %s\n", target)
+	fmt.Println(target)
+	return launchOrExit(target, transport, audioOnly, doScrcpy, doListApps, app)
+}
 
-	// 多个候选时先让用户指定，绝不静默连第一个（插着多台设备时尤其重要）。
-	// 只有一台候选时直接连，不弹选择。
-	target, code := chooseOne(cands, nil)
-	if code != 0 {
-		return code
-	}
-	if len(cands) > 1 {
-		fmt.Fprintf(os.Stderr, "amb: 已指定 %s，开始连接…\n", target)
-	}
-
-	ok := ""
-	out, _ := adbCaptureAll("connect", target)
-	if strings.Contains(out, "connected to") {
-		fmt.Println(target)
-		ok = target
-	} else {
-		first := out
-		if idx := strings.IndexByte(out, '\n'); idx >= 0 {
-			first = out[:idx]
+// containsDevice 判断 target 是否在设备列表里。
+func containsDevice(devs []deviceInfo, target string) bool {
+	for _, d := range devs {
+		if d.serial == target {
+			return true
 		}
-		fmt.Fprintf(os.Stderr, "amb: %s 不可用（%s）\n", target, strings.TrimSpace(first))
 	}
-	if ok == "" {
-		fmt.Fprintln(os.Stderr, "amb: 所有候选地址都连不上。")
-		fmt.Fprintln(os.Stderr, "         如果刚开关过无线调试，等几秒再试；必要时在手机上重新配对。")
-		return 1
+	return false
+}
+
+// deviceLabel 返回设备的展示名：有 model 就带上，没有就只给序列号。
+func deviceLabel(d deviceInfo) string {
+	if d.label != "" {
+		return d.serial + " [" + d.label + "]"
 	}
-	return launchOrExit(ok, "wifi", audioOnly, doScrcpy, doListApps, app)
+	return d.serial
+}
+
+// isWirelessTarget 判断目标是无线地址（IP:端口）还是 USB 序列号。
+func isWirelessTarget(target string) bool {
+	return strings.Contains(target, ":")
 }
 
 // takeValue 取出当前选项的值；没有下一个参数时返回空串（与原脚本行为一致）。
@@ -1018,7 +1111,118 @@ func cmdTcpip(portArg, route string, waitSec int) int {
 	return 0
 }
 
-// ---------------- 多设备选择 ----------------
+// ---------------- 终端设备绑定（会话） ----------------
+
+// 会话按「父进程 PID」区分：每个终端的 shell 有独立 PID，
+// 于是「同一终端后续命令沿用该设备、新开终端重新询问」不需要任何 shell 集成。
+// 例：bash(PID 100) 里先后跑 amb -S、amb -A，两次的 os.Getppid() 都是 100。
+
+// sessionPath 返回当前终端会话文件的路径。
+func sessionPath() string {
+	return filepath.Join(cacheHome(), "sessions", fmt.Sprintf("%d", os.Getppid()))
+}
+
+// loadSession 读取当前终端绑定的设备；没有绑定返回空串。
+func loadSession() string {
+	b, err := os.ReadFile(sessionPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// saveSession 把设备绑定写到当前终端会话文件（覆盖写）。
+func saveSession(target string) error {
+	p := sessionPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(target+"\n"), 0o644)
+}
+
+// clearSession 删除当前终端的设备绑定。
+func clearSession() error {
+	err := os.Remove(sessionPath())
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// sweepSessions 清理已失效终端的会话文件（父进程已退出时 PID 不存在）。
+// 只在写入新会话时顺带做一次，避免 sessions 目录无限堆积。
+func sweepSessions() {
+	dir := filepath.Join(cacheHome(), "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		pid, err := strconv.Atoi(name)
+		if err != nil {
+			continue
+		}
+		// PID 不存在 => 那个终端已经关了
+		if _, err := os.FindProcess(pid); err != nil {
+			continue
+		}
+		if !processAlive(pid) {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
+// processAlive 判断 PID 是否存在（Unix: kill(pid, 0)；无权限也算存在）。
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// cmdRd 处理 amb rd：查看 / 重新指定 / 清除当前终端的设备绑定。
+//
+//	amb rd            查看当前绑定
+//	amb rd <设备>     重新指定
+//	amb rd null       清除绑定
+func cmdRd(arg string) int {
+	cur := loadSession()
+	switch {
+	case arg == "":
+		if cur == "" {
+			fmt.Fprintln(os.Stderr, "amb: 当前终端还没有指定设备。")
+			fmt.Fprintln(os.Stderr, "        （无参数运行 amb 会列出可连设备并询问；或 amb rd <设备> 直接指定）")
+			return 0
+		}
+		fmt.Printf("当前终端绑定的设备：%s\n", cur)
+		fmt.Fprintln(os.Stderr, "        （amb rd null 清除；amb rd <设备> 重新指定）")
+		return 0
+	case arg == "null":
+		if cur == "" {
+			fmt.Fprintln(os.Stderr, "amb: 当前终端本来就没有设备绑定。")
+			return 0
+		}
+		if err := clearSession(); err != nil {
+			fmt.Fprintf(os.Stderr, "amb: 清除失败：%v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "amb: 已清除当前终端的设备绑定（原为 %s）。\n", cur)
+		return 0
+	default:
+		if err := saveSession(arg); err != nil {
+			fmt.Fprintf(os.Stderr, "amb: 保存设备绑定失败：%v\n", err)
+			return 1
+		}
+		sweepSessions()
+		fmt.Fprintf(os.Stderr, "amb: 当前终端已指定设备：%s\n", arg)
+		fmt.Fprintln(os.Stderr, "        同一终端后续的 amb 命令都会用它；amb rd null 可清除。")
+		return 0
+	}
+}
+
+// ---------------- 设备枚举 ----------------
 
 // chooseOne 从多个候选里让用户选一个。
 //

@@ -2,6 +2,12 @@
 # amb — Android Mirror Bridge（安卓镜像桥）：Android 设备一键连接 / 投屏，
 #        有 USB 走 USB，没有才走无线调试
 #
+# 【存档说明】这是 1.2.0 时代的 bash 原版，仅作历史对照保留，不再维护。
+# 现行版本是 Go 重写版（见仓库根目录 main.go），行为以它为准：
+#   * 1.3.0 起无参数会列出全部可连设备并询问，不再自动连接；
+#   * 1.3.0 起有 amb rd / amb rd <设备> / amb rd null 的终端设备绑定；
+#   * 本脚本保留 1.2.0 行为（多设备时列出让你选，但不做终端绑定）。
+#
 #   amb               # 自动选路：有 USB 就用 USB，否则连无线。stdout 只输出选中的序列号/地址
 #   amb -S            # 连上后启动 scrcpy（参数见下方 SCRCPY_ARGS）
 #   amb -a com.miui.calculator -S   # 只流转指定应用（虚拟显示，手机主屏不受影响）；-a 隐含 -S

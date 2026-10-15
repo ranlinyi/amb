@@ -14,8 +14,9 @@ set -euo pipefail
 
 OWNER="${GITHUB_OWNER:-ranlinyi}"
 REPO="${REPO_NAME:-amb}"
-TAG="${TAG:-v1.2.0}"
-TITLE="${RELEASE_TITLE:-amb 1.2.0（自包含单文件便携版）}"
+TAG="${TAG:-v1.3.0}"
+# TITLE 默认由 TAG 推导，避免 tag 升了版、标题还写着旧版本号（曾实际发生过）
+TITLE="${RELEASE_TITLE:-amb ${TAG#v}（自包含单文件便携版）}"
 API="https://api.github.com"
 UPLOADS="https://uploads.github.com"
 
